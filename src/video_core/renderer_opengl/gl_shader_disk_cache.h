@@ -21,11 +21,7 @@
 #include "video_core/engines/shader_type.h"
 #include "video_core/shader/registry.h"
 
-namespace Core {
-class System;
-}
-
-namespace FileUtil {
+namespace Common::FS {
 class IOFile;
 }
 
@@ -38,9 +34,9 @@ struct ShaderDiskCacheEntry {
     ShaderDiskCacheEntry();
     ~ShaderDiskCacheEntry();
 
-    bool Load(FileUtil::IOFile& file);
+    bool Load(Common::FS::IOFile& file);
 
-    bool Save(FileUtil::IOFile& file) const;
+    bool Save(Common::FS::IOFile& file) const;
 
     bool HasProgramA() const {
         return !code.empty() && !code_b.empty();
@@ -57,6 +53,7 @@ struct ShaderDiskCacheEntry {
     VideoCommon::Shader::ComputeInfo compute_info;
     VideoCommon::Shader::KeyMap keys;
     VideoCommon::Shader::BoundSamplerMap bound_samplers;
+    VideoCommon::Shader::SeparateSamplerMap separate_samplers;
     VideoCommon::Shader::BindlessSamplerMap bindless_samplers;
 };
 
@@ -69,8 +66,11 @@ struct ShaderDiskCachePrecompiled {
 
 class ShaderDiskCacheOpenGL {
 public:
-    explicit ShaderDiskCacheOpenGL(Core::System& system);
+    explicit ShaderDiskCacheOpenGL();
     ~ShaderDiskCacheOpenGL();
+
+    /// Binds a title ID for all future operations.
+    void BindTitleID(u64 title_id);
 
     /// Loads transferable cache. If file has a old version or on failure, it deletes the file.
     std::optional<std::vector<ShaderDiskCacheEntry>> LoadTransferable();
@@ -96,10 +96,10 @@ public:
 private:
     /// Loads the transferable cache. Returns empty on failure.
     std::optional<std::vector<ShaderDiskCachePrecompiled>> LoadPrecompiledFile(
-        FileUtil::IOFile& file);
+        Common::FS::IOFile& file);
 
     /// Opens current game's transferable file and write it's header if it doesn't exist
-    FileUtil::IOFile AppendTransferableFile() const;
+    Common::FS::IOFile AppendTransferableFile() const;
 
     /// Save precompiled header to precompiled_cache_in_memory
     void SavePrecompiledHeaderToVirtualPrecompiledCache();
@@ -156,8 +156,6 @@ private:
         return LoadArrayFromPrecompiled(&object, 1);
     }
 
-    Core::System& system;
-
     // Stores whole precompiled cache which will be read from or saved to the precompiled chache
     // file
     FileSys::VectorVfsFile precompiled_cache_virtual_file;
@@ -167,8 +165,11 @@ private:
     // Stored transferable shaders
     std::unordered_set<u64> stored_transferable;
 
+    /// Title ID to operate on
+    u64 title_id = 0;
+
     // The cache has been loaded at boot
-    bool is_usable{};
+    bool is_usable = false;
 };
 
 } // namespace OpenGL

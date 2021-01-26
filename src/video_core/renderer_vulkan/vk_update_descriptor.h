@@ -8,24 +8,20 @@
 #include <boost/container/static_vector.hpp>
 
 #include "common/common_types.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
 
-class VKDevice;
+class Device;
 class VKScheduler;
 
-class DescriptorUpdateEntry {
-public:
-    explicit DescriptorUpdateEntry() {}
+struct DescriptorUpdateEntry {
+    DescriptorUpdateEntry(VkDescriptorImageInfo image_) : image{image_} {}
 
-    DescriptorUpdateEntry(VkDescriptorImageInfo image) : image{image} {}
+    DescriptorUpdateEntry(VkDescriptorBufferInfo buffer_) : buffer{buffer_} {}
 
-    DescriptorUpdateEntry(VkDescriptorBufferInfo buffer) : buffer{buffer} {}
+    DescriptorUpdateEntry(VkBufferView texel_buffer_) : texel_buffer{texel_buffer_} {}
 
-    DescriptorUpdateEntry(VkBufferView texel_buffer) : texel_buffer{texel_buffer} {}
-
-private:
     union {
         VkDescriptorImageInfo image;
         VkDescriptorBufferInfo buffer;
@@ -35,7 +31,7 @@ private:
 
 class VKUpdateDescriptorQueue final {
 public:
-    explicit VKUpdateDescriptorQueue(const VKDevice& device, VKScheduler& scheduler);
+    explicit VKUpdateDescriptorQueue(const Device& device_, VKScheduler& scheduler_);
     ~VKUpdateDescriptorQueue();
 
     void TickFrame();
@@ -44,33 +40,39 @@ public:
 
     void Send(VkDescriptorUpdateTemplateKHR update_template, VkDescriptorSet set);
 
-    void AddSampledImage(VkSampler sampler, VkImageView image_view) {
-        entries.emplace_back(VkDescriptorImageInfo{sampler, image_view, {}});
+    void AddSampledImage(VkImageView image_view, VkSampler sampler) {
+        payload.emplace_back(VkDescriptorImageInfo{
+            .sampler = sampler,
+            .imageView = image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        });
     }
 
     void AddImage(VkImageView image_view) {
-        entries.emplace_back(VkDescriptorImageInfo{{}, image_view, {}});
+        payload.emplace_back(VkDescriptorImageInfo{
+            .sampler = VK_NULL_HANDLE,
+            .imageView = image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        });
     }
 
-    void AddBuffer(VkBuffer buffer, u64 offset, std::size_t size) {
-        entries.emplace_back(VkDescriptorBufferInfo{buffer, offset, size});
+    void AddBuffer(VkBuffer buffer, u64 offset, size_t size) {
+        payload.emplace_back(VkDescriptorBufferInfo{
+            .buffer = buffer,
+            .offset = offset,
+            .range = size,
+        });
     }
 
     void AddTexelBuffer(VkBufferView texel_buffer) {
-        entries.emplace_back(texel_buffer);
-    }
-
-    VkImageLayout* GetLastImageLayout() {
-        return &std::get<VkDescriptorImageInfo>(entries.back()).imageLayout;
+        payload.emplace_back(texel_buffer);
     }
 
 private:
-    using Variant = std::variant<VkDescriptorImageInfo, VkDescriptorBufferInfo, VkBufferView>;
-
-    const VKDevice& device;
+    const Device& device;
     VKScheduler& scheduler;
 
-    boost::container::static_vector<Variant, 0x400> entries;
+    const DescriptorUpdateEntry* upload_start = nullptr;
     boost::container::static_vector<DescriptorUpdateEntry, 0x10000> payload;
 };
 

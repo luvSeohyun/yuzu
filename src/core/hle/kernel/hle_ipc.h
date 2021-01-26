@@ -13,6 +13,7 @@
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "common/common_types.h"
+#include "common/concepts.h"
 #include "common/swap.h"
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/object.h"
@@ -21,6 +22,10 @@ union ResultCode;
 
 namespace Core::Memory {
 class Memory;
+}
+
+namespace IPC {
+class ResponseBuilder;
 }
 
 namespace Service {
@@ -124,23 +129,6 @@ public:
     using WakeupCallback = std::function<void(
         std::shared_ptr<Thread> thread, HLERequestContext& context, ThreadWakeupReason reason)>;
 
-    /**
-     * Puts the specified guest thread to sleep until the returned event is signaled or until the
-     * specified timeout expires.
-     * @param reason Reason for pausing the thread, to be used for debugging purposes.
-     * @param timeout Timeout in nanoseconds after which the thread will be awoken and the callback
-     * invoked with a Timeout reason.
-     * @param callback Callback to be invoked when the thread is resumed. This callback must write
-     * the entire command response once again, regardless of the state of it before this function
-     * was called.
-     * @param writable_event Event to use to wake up the thread. If unspecified, an event will be
-     * created.
-     * @returns Event that when signaled will resume the thread and call the callback function.
-     */
-    std::shared_ptr<WritableEvent> SleepClientThread(
-        const std::string& reason, u64 timeout, WakeupCallback&& callback,
-        std::shared_ptr<WritableEvent> writable_event = nullptr);
-
     /// Populates this context with data from the requesting process/thread.
     ResultCode PopulateFromIncomingCommandBuffer(const HandleTable& handle_table,
                                                  u32_le* src_cmdbuf);
@@ -193,23 +181,24 @@ public:
 
     /* Helper function to write a buffer using the appropriate buffer descriptor
      *
-     * @tparam ContiguousContainer an arbitrary container that satisfies the
-     *         ContiguousContainer concept in the C++ standard library.
+     * @tparam T an arbitrary container that satisfies the
+     *         ContiguousContainer concept in the C++ standard library or a trivially copyable type.
      *
-     * @param container    The container to write the data of into a buffer.
+     * @param data         The container/data to write into a buffer.
      * @param buffer_index The buffer in particular to write to.
      */
-    template <typename ContiguousContainer,
-              typename = std::enable_if_t<!std::is_pointer_v<ContiguousContainer>>>
-    std::size_t WriteBuffer(const ContiguousContainer& container,
-                            std::size_t buffer_index = 0) const {
-        using ContiguousType = typename ContiguousContainer::value_type;
-
-        static_assert(std::is_trivially_copyable_v<ContiguousType>,
-                      "Container to WriteBuffer must contain trivially copyable objects");
-
-        return WriteBuffer(std::data(container), std::size(container) * sizeof(ContiguousType),
-                           buffer_index);
+    template <typename T, typename = std::enable_if_t<!std::is_pointer_v<T>>>
+    std::size_t WriteBuffer(const T& data, std::size_t buffer_index = 0) const {
+        if constexpr (Common::IsSTLContainer<T>) {
+            using ContiguousType = typename T::value_type;
+            static_assert(std::is_trivially_copyable_v<ContiguousType>,
+                          "Container to WriteBuffer must contain trivially copyable objects");
+            return WriteBuffer(std::data(data), std::size(data) * sizeof(ContiguousType),
+                               buffer_index);
+        } else {
+            static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+            return WriteBuffer(&data, sizeof(T), buffer_index);
+        }
     }
 
     /// Helper function to get the size of the input buffer
@@ -285,6 +274,8 @@ public:
     }
 
 private:
+    friend class IPC::ResponseBuilder;
+
     void ParseCommandBuffer(const HandleTable& handle_table, u32_le* src_cmdbuf, bool incoming);
 
     std::array<u32, IPC::COMMAND_BUFFER_LENGTH> cmd_buf;

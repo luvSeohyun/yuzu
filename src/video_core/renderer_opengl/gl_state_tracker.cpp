@@ -13,7 +13,7 @@
 #include "video_core/renderer_opengl/gl_state_tracker.h"
 
 #define OFF(field_name) MAXWELL3D_REG_INDEX(field_name)
-#define NUM(field_name) (sizeof(Maxwell3D::Regs::field_name) / sizeof(u32))
+#define NUM(field_name) (sizeof(Maxwell3D::Regs::field_name) / (sizeof(u32)))
 
 namespace OpenGL {
 
@@ -214,10 +214,8 @@ void SetupDirtyMisc(Tables& tables) {
 
 } // Anonymous namespace
 
-StateTracker::StateTracker(Core::System& system) : system{system} {}
-
-void StateTracker::Initialize() {
-    auto& dirty = system.GPU().Maxwell3D().dirty;
+StateTracker::StateTracker(Tegra::GPU& gpu) : flags{gpu.Maxwell3D().dirty.flags} {
+    auto& dirty = gpu.Maxwell3D().dirty;
     auto& tables = dirty.tables;
     SetupDirtyRenderTargets(tables);
     SetupDirtyColorMasks(tables);
@@ -248,6 +246,13 @@ void StateTracker::Initialize() {
     store[VertexBuffers] = true;
     for (std::size_t i = 0; i < Regs::NumVertexArrays; ++i) {
         store[VertexBuffer0 + i] = true;
+    }
+}
+
+void StateTracker::InvalidateStreamBuffer() {
+    flags[Dirty::VertexBuffers] = true;
+    for (int index = Dirty::VertexBuffer0; index <= Dirty::VertexBuffer31; ++index) {
+        flags[index] = true;
     }
 }
 

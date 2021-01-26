@@ -15,8 +15,9 @@
 #include "common/hex_util.h"
 #include "common/string_util.h"
 #include "core/crypto/aes_util.h"
+#include "core/crypto/key_manager.h"
 #include "core/crypto/xts_encryption_layer.h"
-#include "core/file_sys/partition_filesystem.h"
+#include "core/file_sys/content_archive.h"
 #include "core/file_sys/vfs_offset.h"
 #include "core/file_sys/xts_archive.h"
 #include "core/loader/loader.h"
@@ -43,8 +44,10 @@ static bool CalculateHMAC256(Destination* out, const SourceKey* key, std::size_t
     return true;
 }
 
-NAX::NAX(VirtualFile file_) : header(std::make_unique<NAXHeader>()), file(std::move(file_)) {
-    std::string path = FileUtil::SanitizePath(file->GetFullPath());
+NAX::NAX(VirtualFile file_)
+    : header(std::make_unique<NAXHeader>()),
+      file(std::move(file_)), keys{Core::Crypto::KeyManager::Instance()} {
+    std::string path = Common::FS::SanitizePath(file->GetFullPath());
     static const std::regex nax_path_regex("/registered/(000000[0-9A-F]{2})/([0-9A-F]{32})\\.nca",
                                            std::regex_constants::ECMAScript |
                                                std::regex_constants::icase);
@@ -60,7 +63,8 @@ NAX::NAX(VirtualFile file_) : header(std::make_unique<NAXHeader>()), file(std::m
 }
 
 NAX::NAX(VirtualFile file_, std::array<u8, 0x10> nca_id)
-    : header(std::make_unique<NAXHeader>()), file(std::move(file_)) {
+    : header(std::make_unique<NAXHeader>()),
+      file(std::move(file_)), keys{Core::Crypto::KeyManager::Instance()} {
     Core::Crypto::SHA256Hash hash{};
     mbedtls_sha256_ret(nca_id.data(), nca_id.size(), hash.data(), 0);
     status = Parse(fmt::format("/registered/000000{:02X}/{}.nca", hash[0],
@@ -70,14 +74,18 @@ NAX::NAX(VirtualFile file_, std::array<u8, 0x10> nca_id)
 NAX::~NAX() = default;
 
 Loader::ResultStatus NAX::Parse(std::string_view path) {
-    if (file->ReadObject(header.get()) != sizeof(NAXHeader))
+    if (file == nullptr) {
+        return Loader::ResultStatus::ErrorNullFile;
+    }
+    if (file->ReadObject(header.get()) != sizeof(NAXHeader)) {
         return Loader::ResultStatus::ErrorBadNAXHeader;
-
-    if (header->magic != Common::MakeMagic('N', 'A', 'X', '0'))
+    }
+    if (header->magic != Common::MakeMagic('N', 'A', 'X', '0')) {
         return Loader::ResultStatus::ErrorBadNAXHeader;
-
-    if (file->GetSize() < NAX_HEADER_PADDING_SIZE + header->file_size)
+    }
+    if (file->GetSize() < NAX_HEADER_PADDING_SIZE + header->file_size) {
         return Loader::ResultStatus::ErrorIncorrectNAXFileSize;
+    }
 
     keys.DeriveSDSeedLazy();
     std::array<Core::Crypto::Key256, 2> sd_keys{};
@@ -144,11 +152,11 @@ NAXContentType NAX::GetContentType() const {
     return type;
 }
 
-std::vector<std::shared_ptr<VfsFile>> NAX::GetFiles() const {
+std::vector<VirtualFile> NAX::GetFiles() const {
     return {dec_file};
 }
 
-std::vector<std::shared_ptr<VfsDirectory>> NAX::GetSubdirectories() const {
+std::vector<VirtualDir> NAX::GetSubdirectories() const {
     return {};
 }
 
@@ -156,7 +164,7 @@ std::string NAX::GetName() const {
     return file->GetName();
 }
 
-std::shared_ptr<VfsDirectory> NAX::GetParentDirectory() const {
+VirtualDir NAX::GetParentDirectory() const {
     return file->GetContainingDirectory();
 }
 

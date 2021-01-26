@@ -6,7 +6,7 @@
 
 namespace Service::Sockets {
 
-NSD::NSD(const char* name) : ServiceFramework(name) {
+NSD::NSD(Core::System& system_, const char* name) : ServiceFramework{system_, name} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {10, nullptr, "GetSettingName"},
@@ -14,6 +14,7 @@ NSD::NSD(const char* name) : ServiceFramework(name) {
         {12, nullptr, "GetDeviceId"},
         {13, nullptr, "DeleteSettings"},
         {14, nullptr, "ImportSettings"},
+        {15, nullptr, "SetChangeEnvironmentIdentifierDisabled"},
         {20, nullptr, "Resolve"},
         {21, nullptr, "ResolveEx"},
         {30, nullptr, "GetNasServiceSetting"},
@@ -28,6 +29,11 @@ NSD::NSD(const char* name) : ServiceFramework(name) {
         {60, nullptr, "ReadSaveDataFromFsForTest"},
         {61, nullptr, "WriteSaveDataToFsForTest"},
         {62, nullptr, "DeleteSaveDataOfFsForTest"},
+        {63, nullptr, "IsChangeEnvironmentIdentifierDisabled"},
+        {64, nullptr, "SetWithoutDomainExchangeFqdns"},
+        {100, nullptr, "GetApplicationServerEnvironmentType"},
+        {101, nullptr, "SetApplicationServerEnvironmentType"},
+        {102, nullptr, "DeleteApplicationServerEnvironmentType"},
     };
     // clang-format on
 

@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <iterator>
 
@@ -14,7 +15,7 @@
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 
 #define OFF(field_name) MAXWELL3D_REG_INDEX(field_name)
-#define NUM(field_name) (sizeof(Maxwell3D::Regs::field_name) / sizeof(u32))
+#define NUM(field_name) (sizeof(Maxwell3D::Regs::field_name) / (sizeof(u32)))
 
 namespace Vulkan {
 
@@ -29,13 +30,15 @@ using Table = Maxwell3D::DirtyState::Table;
 using Flags = Maxwell3D::DirtyState::Flags;
 
 Flags MakeInvalidationFlags() {
+    static constexpr std::array INVALIDATION_FLAGS{
+        Viewports,         Scissors,  DepthBias,         BlendConstants,    DepthBounds,
+        StencilProperties, CullMode,  DepthBoundsEnable, DepthTestEnable,   DepthWriteEnable,
+        DepthCompareOp,    FrontFace, StencilOp,         StencilTestEnable,
+    };
     Flags flags{};
-    flags[Viewports] = true;
-    flags[Scissors] = true;
-    flags[DepthBias] = true;
-    flags[BlendConstants] = true;
-    flags[DepthBounds] = true;
-    flags[StencilProperties] = true;
+    for (const int flag : INVALIDATION_FLAGS) {
+        flags[flag] = true;
+    }
     return flags;
 }
 
@@ -75,14 +78,58 @@ void SetupDirtyStencilProperties(Tables& tables) {
     table[OFF(stencil_back_func_mask)] = StencilProperties;
 }
 
+void SetupDirtyCullMode(Tables& tables) {
+    auto& table = tables[0];
+    table[OFF(cull_face)] = CullMode;
+    table[OFF(cull_test_enabled)] = CullMode;
+}
+
+void SetupDirtyDepthBoundsEnable(Tables& tables) {
+    tables[0][OFF(depth_bounds_enable)] = DepthBoundsEnable;
+}
+
+void SetupDirtyDepthTestEnable(Tables& tables) {
+    tables[0][OFF(depth_test_enable)] = DepthTestEnable;
+}
+
+void SetupDirtyDepthWriteEnable(Tables& tables) {
+    tables[0][OFF(depth_write_enabled)] = DepthWriteEnable;
+}
+
+void SetupDirtyDepthCompareOp(Tables& tables) {
+    tables[0][OFF(depth_test_func)] = DepthCompareOp;
+}
+
+void SetupDirtyFrontFace(Tables& tables) {
+    auto& table = tables[0];
+    table[OFF(front_face)] = FrontFace;
+    table[OFF(screen_y_control)] = FrontFace;
+}
+
+void SetupDirtyStencilOp(Tables& tables) {
+    auto& table = tables[0];
+    table[OFF(stencil_front_op_fail)] = StencilOp;
+    table[OFF(stencil_front_op_zfail)] = StencilOp;
+    table[OFF(stencil_front_op_zpass)] = StencilOp;
+    table[OFF(stencil_front_func_func)] = StencilOp;
+    table[OFF(stencil_back_op_fail)] = StencilOp;
+    table[OFF(stencil_back_op_zfail)] = StencilOp;
+    table[OFF(stencil_back_op_zpass)] = StencilOp;
+    table[OFF(stencil_back_func_func)] = StencilOp;
+
+    // Table 0 is used by StencilProperties
+    tables[1][OFF(stencil_two_side_enable)] = StencilOp;
+}
+
+void SetupDirtyStencilTestEnable(Tables& tables) {
+    tables[0][OFF(stencil_enable)] = StencilTestEnable;
+}
+
 } // Anonymous namespace
 
-StateTracker::StateTracker(Core::System& system)
-    : system{system}, invalidation_flags{MakeInvalidationFlags()} {}
-
-void StateTracker::Initialize() {
-    auto& dirty = system.GPU().Maxwell3D().dirty;
-    auto& tables = dirty.tables;
+StateTracker::StateTracker(Tegra::GPU& gpu)
+    : flags{gpu.Maxwell3D().dirty.flags}, invalidation_flags{MakeInvalidationFlags()} {
+    auto& tables = gpu.Maxwell3D().dirty.tables;
     SetupDirtyRenderTargets(tables);
     SetupDirtyViewports(tables);
     SetupDirtyScissors(tables);
@@ -90,10 +137,14 @@ void StateTracker::Initialize() {
     SetupDirtyBlendConstants(tables);
     SetupDirtyDepthBounds(tables);
     SetupDirtyStencilProperties(tables);
-}
-
-void StateTracker::InvalidateCommandBufferState() {
-    system.GPU().Maxwell3D().dirty.flags |= invalidation_flags;
+    SetupDirtyCullMode(tables);
+    SetupDirtyDepthBoundsEnable(tables);
+    SetupDirtyDepthTestEnable(tables);
+    SetupDirtyDepthWriteEnable(tables);
+    SetupDirtyDepthCompareOp(tables);
+    SetupDirtyFrontFace(tables);
+    SetupDirtyStencilOp(tables);
+    SetupDirtyStencilTestEnable(tables);
 }
 
 } // namespace Vulkan

@@ -29,8 +29,8 @@ struct ShaderBlock;
 constexpr u32 MAX_PROGRAM_LENGTH = 0x1000;
 
 struct ConstBuffer {
-    constexpr explicit ConstBuffer(u32 max_offset, bool is_indirect)
-        : max_offset{max_offset}, is_indirect{is_indirect} {}
+    constexpr explicit ConstBuffer(u32 max_offset_, bool is_indirect_)
+        : max_offset{max_offset_}, is_indirect{is_indirect_} {}
 
     constexpr ConstBuffer() = default;
 
@@ -66,8 +66,8 @@ struct GlobalMemoryUsage {
 
 class ShaderIR final {
 public:
-    explicit ShaderIR(const ProgramCode& program_code, u32 main_offset, CompilerSettings settings,
-                      Registry& registry);
+    explicit ShaderIR(const ProgramCode& program_code_, u32 main_offset_,
+                      CompilerSettings settings_, Registry& registry_);
     ~ShaderIR();
 
     const std::map<u32, NodeBlock>& GetBasicBlocks() const {
@@ -94,11 +94,11 @@ public:
         return used_cbufs;
     }
 
-    const std::list<Sampler>& GetSamplers() const {
+    const std::list<SamplerEntry>& GetSamplers() const {
         return used_samplers;
     }
 
-    const std::list<Image>& GetImages() const {
+    const std::list<ImageEntry>& GetImages() const {
         return used_images;
     }
 
@@ -330,21 +330,21 @@ private:
     OperationCode GetPredicateCombiner(Tegra::Shader::PredOperation operation);
 
     /// Queries the missing sampler info from the execution context.
-    SamplerInfo GetSamplerInfo(SamplerInfo info, u32 offset,
-                               std::optional<u32> buffer = std::nullopt);
+    SamplerInfo GetSamplerInfo(SamplerInfo info,
+                               std::optional<Tegra::Engines::SamplerDescriptor> sampler);
 
     /// Accesses a texture sampler.
-    std::optional<Sampler> GetSampler(Tegra::Shader::Sampler sampler, SamplerInfo info);
+    std::optional<SamplerEntry> GetSampler(Tegra::Shader::Sampler sampler, SamplerInfo info);
 
     /// Accesses a texture sampler for a bindless texture.
-    std::optional<Sampler> GetBindlessSampler(Tegra::Shader::Register reg, SamplerInfo info,
-                                              Node& index_var);
+    std::optional<SamplerEntry> GetBindlessSampler(Tegra::Shader::Register reg, SamplerInfo info,
+                                                   Node& index_var);
 
     /// Accesses an image.
-    Image& GetImage(Tegra::Shader::Image image, Tegra::Shader::ImageType type);
+    ImageEntry& GetImage(Tegra::Shader::Image image, Tegra::Shader::ImageType type);
 
     /// Access a bindless image sampler.
-    Image& GetBindlessImage(Tegra::Shader::Register reg, Tegra::Shader::ImageType type);
+    ImageEntry& GetBindlessImage(Tegra::Shader::Register reg, Tegra::Shader::ImageType type);
 
     /// Extracts a sequence of bits from a node
     Node BitfieldExtract(Node value, u32 offset, u32 bits);
@@ -409,8 +409,14 @@ private:
 
     std::tuple<Node, u32, u32> TrackCbuf(Node tracked, const NodeBlock& code, s64 cursor) const;
 
-    std::tuple<Node, TrackSampler> TrackBindlessSampler(Node tracked, const NodeBlock& code,
-                                                        s64 cursor);
+    std::pair<Node, TrackSampler> TrackBindlessSampler(Node tracked, const NodeBlock& code,
+                                                       s64 cursor);
+
+    std::pair<Node, TrackSampler> HandleBindlessIndirectRead(const CbufNode& cbuf,
+                                                             const OperationNode& operation,
+                                                             Node gpr, Node base_offset,
+                                                             Node tracked, const NodeBlock& code,
+                                                             s64 cursor);
 
     std::optional<u32> TrackImmediate(Node tracked, const NodeBlock& code, s64 cursor) const;
 
@@ -448,8 +454,8 @@ private:
     std::set<Tegra::Shader::Attribute::Index> used_input_attributes;
     std::set<Tegra::Shader::Attribute::Index> used_output_attributes;
     std::map<u32, ConstBuffer> used_cbufs;
-    std::list<Sampler> used_samplers;
-    std::list<Image> used_images;
+    std::list<SamplerEntry> used_samplers;
+    std::list<ImageEntry> used_images;
     std::array<bool, Tegra::Engines::Maxwell3D::Regs::NumClipDistances> used_clip_distances{};
     std::map<GlobalMemoryBase, GlobalMemoryUsage> used_global_memory;
     bool uses_layer{};

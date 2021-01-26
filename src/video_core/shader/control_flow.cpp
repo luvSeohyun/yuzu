@@ -66,8 +66,8 @@ struct BlockInfo {
 };
 
 struct CFGRebuildState {
-    explicit CFGRebuildState(const ProgramCode& program_code, u32 start, Registry& registry)
-        : program_code{program_code}, registry{registry}, start{start} {}
+    explicit CFGRebuildState(const ProgramCode& program_code_, u32 start_, Registry& registry_)
+        : program_code{program_code_}, registry{registry_}, start{start_} {}
 
     const ProgramCode& program_code;
     Registry& registry;
@@ -187,24 +187,26 @@ std::optional<std::pair<BufferInfo, u64>> TrackLDC(const CFGRebuildState& state,
 
 std::optional<u64> TrackSHLRegister(const CFGRebuildState& state, u32& pos,
                                     u64 ldc_tracked_register) {
-    return TrackInstruction<u64>(state, pos,
-                                 [ldc_tracked_register](auto instr, const auto& opcode) {
-                                     return opcode.GetId() == OpCode::Id::SHL_IMM &&
-                                            instr.gpr0.Value() == ldc_tracked_register;
-                                 },
-                                 [](auto instr, const auto&) { return instr.gpr8.Value(); });
+    return TrackInstruction<u64>(
+        state, pos,
+        [ldc_tracked_register](auto instr, const auto& opcode) {
+            return opcode.GetId() == OpCode::Id::SHL_IMM &&
+                   instr.gpr0.Value() == ldc_tracked_register;
+        },
+        [](auto instr, const auto&) { return instr.gpr8.Value(); });
 }
 
 std::optional<u32> TrackIMNMXValue(const CFGRebuildState& state, u32& pos,
                                    u64 shl_tracked_register) {
-    return TrackInstruction<u32>(state, pos,
-                                 [shl_tracked_register](auto instr, const auto& opcode) {
-                                     return opcode.GetId() == OpCode::Id::IMNMX_IMM &&
-                                            instr.gpr0.Value() == shl_tracked_register;
-                                 },
-                                 [](auto instr, const auto&) {
-                                     return static_cast<u32>(instr.alu.GetSignedImm20_20() + 1);
-                                 });
+    return TrackInstruction<u32>(
+        state, pos,
+        [shl_tracked_register](auto instr, const auto& opcode) {
+            return opcode.GetId() == OpCode::Id::IMNMX_IMM &&
+                   instr.gpr0.Value() == shl_tracked_register;
+        },
+        [](auto instr, const auto&) {
+            return static_cast<u32>(instr.alu.GetSignedImm20_20() + 1);
+        });
 }
 
 std::optional<BranchIndirectInfo> TrackBranchIndirectInfo(const CFGRebuildState& state, u32 pos) {
@@ -239,10 +241,10 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
     ParseInfo parse_info{};
     SingleBranch single_branch{};
 
-    const auto insert_label = [](CFGRebuildState& state, u32 address) {
-        const auto pair = state.labels.emplace(address);
+    const auto insert_label = [](CFGRebuildState& rebuild_state, u32 label_address) {
+        const auto pair = rebuild_state.labels.emplace(label_address);
         if (pair.second) {
-            state.inspect_queries.push_back(address);
+            rebuild_state.inspect_queries.push_back(label_address);
         }
     };
 
@@ -255,7 +257,7 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
             single_branch.ignore = false;
             break;
         }
-        if (state.registered.count(offset) != 0) {
+        if (state.registered.contains(offset)) {
             single_branch.address = offset;
             single_branch.ignore = true;
             break;
@@ -545,13 +547,13 @@ bool TryQuery(CFGRebuildState& state) {
     gather_labels(q2.ssy_stack, state.ssy_labels, block);
     gather_labels(q2.pbk_stack, state.pbk_labels, block);
     if (std::holds_alternative<SingleBranch>(*block.branch)) {
-        const auto branch = std::get_if<SingleBranch>(block.branch.get());
+        auto* branch = std::get_if<SingleBranch>(block.branch.get());
         if (!branch->condition.IsUnconditional()) {
             q2.address = block.end + 1;
             state.queries.push_back(q2);
         }
 
-        Query conditional_query{q2};
+        auto& conditional_query = state.queries.emplace_back(q2);
         if (branch->is_sync) {
             if (branch->address == unassigned_branch) {
                 branch->address = conditional_query.ssy_stack.top();
@@ -565,21 +567,21 @@ bool TryQuery(CFGRebuildState& state) {
             conditional_query.pbk_stack.pop();
         }
         conditional_query.address = branch->address;
-        state.queries.push_back(std::move(conditional_query));
         return true;
     }
-    const auto multi_branch = std::get_if<MultiBranch>(block.branch.get());
+
+    const auto* multi_branch = std::get_if<MultiBranch>(block.branch.get());
     for (const auto& branch_case : multi_branch->branches) {
-        Query conditional_query{q2};
+        auto& conditional_query = state.queries.emplace_back(q2);
         conditional_query.address = branch_case.address;
-        state.queries.push_back(std::move(conditional_query));
     }
+
     return true;
 }
 
 void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch_info) {
-    const auto get_expr = ([&](const Condition& cond) -> Expr {
-        Expr result{};
+    const auto get_expr = [](const Condition& cond) -> Expr {
+        Expr result;
         if (cond.cc != ConditionCode::T) {
             result = MakeExpr<ExprCondCode>(cond.cc);
         }
@@ -592,10 +594,10 @@ void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch_info) {
             }
             Expr extra = MakeExpr<ExprPredicate>(pred);
             if (negate) {
-                extra = MakeExpr<ExprNot>(extra);
+                extra = MakeExpr<ExprNot>(std::move(extra));
             }
             if (result) {
-                return MakeExpr<ExprAnd>(extra, result);
+                return MakeExpr<ExprAnd>(std::move(extra), std::move(result));
             }
             return extra;
         }
@@ -603,9 +605,10 @@ void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch_info) {
             return result;
         }
         return MakeExpr<ExprBoolean>(true);
-    });
+    };
+
     if (std::holds_alternative<SingleBranch>(*branch_info)) {
-        const auto branch = std::get_if<SingleBranch>(branch_info.get());
+        const auto* branch = std::get_if<SingleBranch>(branch_info.get());
         if (branch->address < 0) {
             if (branch->kill) {
                 mm.InsertReturn(get_expr(branch->condition), true);
@@ -617,7 +620,7 @@ void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch_info) {
         mm.InsertGoto(get_expr(branch->condition), branch->address);
         return;
     }
-    const auto multi_branch = std::get_if<MultiBranch>(branch_info.get());
+    const auto* multi_branch = std::get_if<MultiBranch>(branch_info.get());
     for (const auto& branch_case : multi_branch->branches) {
         mm.InsertGoto(MakeExpr<ExprGprEqual>(multi_branch->gpr, branch_case.cmp_value),
                       branch_case.address);
@@ -629,12 +632,12 @@ void DecompileShader(CFGRebuildState& state) {
     for (auto label : state.labels) {
         state.manager->DeclareLabel(label);
     }
-    for (auto& block : state.block_info) {
-        if (state.labels.count(block.start) != 0) {
+    for (const auto& block : state.block_info) {
+        if (state.labels.contains(block.start)) {
             state.manager->InsertLabel(block.start);
         }
         const bool ignore = BlockBranchIsIgnored(block.branch);
-        u32 end = ignore ? block.end + 1 : block.end;
+        const u32 end = ignore ? block.end + 1 : block.end;
         state.manager->InsertBlock(block.start, end);
         if (!ignore) {
             InsertBranch(*state.manager, block.branch);
@@ -734,7 +737,7 @@ std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code,
     auto back = result_out->blocks.begin();
     auto next = std::next(back);
     while (next != result_out->blocks.end()) {
-        if (state.labels.count(next->start) == 0 && next->start == back->end + 1) {
+        if (!state.labels.contains(next->start) && next->start == back->end + 1) {
             back->end = next->end;
             next = result_out->blocks.erase(next);
             continue;

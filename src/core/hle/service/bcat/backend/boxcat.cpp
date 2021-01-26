@@ -89,12 +89,12 @@ constexpr u32 TIMEOUT_SECONDS = 30;
 
 std::string GetBINFilePath(u64 title_id) {
     return fmt::format("{}bcat/{:016X}/launchparam.bin",
-                       FileUtil::GetUserPath(FileUtil::UserPath::CacheDir), title_id);
+                       Common::FS::GetUserPath(Common::FS::UserPath::CacheDir), title_id);
 }
 
 std::string GetZIPFilePath(u64 title_id) {
     return fmt::format("{}bcat/{:016X}/data.zip",
-                       FileUtil::GetUserPath(FileUtil::UserPath::CacheDir), title_id);
+                       Common::FS::GetUserPath(Common::FS::UserPath::CacheDir), title_id);
 }
 
 // If the error is something the user should know about (build ID mismatch, bad client version),
@@ -196,7 +196,9 @@ private:
                                     const std::string& content_type_name) {
         if (client == nullptr) {
             client = std::make_unique<httplib::SSLClient>(BOXCAT_HOSTNAME, PORT);
-            client->set_timeout_sec(timeout_seconds);
+            client->set_connection_timeout(timeout_seconds);
+            client->set_read_timeout(timeout_seconds);
+            client->set_write_timeout(timeout_seconds);
         }
 
         httplib::Headers headers{
@@ -205,8 +207,8 @@ private:
             {std::string("Game-Build-Id"), fmt::format("{:016X}", build_id)},
         };
 
-        if (FileUtil::Exists(path)) {
-            FileUtil::IOFile file{path, "rb"};
+        if (Common::FS::Exists(path)) {
+            Common::FS::IOFile file{path, "rb"};
             if (file.IsOpen()) {
                 std::vector<u8> bytes(file.GetSize());
                 file.ReadBytes(bytes.data(), bytes.size());
@@ -236,8 +238,8 @@ private:
             return DownloadResult::InvalidContentType;
         }
 
-        FileUtil::CreateFullPath(path);
-        FileUtil::IOFile file{path, "wb"};
+        Common::FS::CreateFullPath(path);
+        Common::FS::IOFile file{path, "wb"};
         if (!file.IsOpen())
             return DownloadResult::GeneralFSError;
         if (!file.Resize(response->body.size()))
@@ -255,7 +257,7 @@ private:
         return out;
     }
 
-    std::unique_ptr<httplib::Client> client;
+    std::unique_ptr<httplib::SSLClient> client;
     std::string path;
     u64 title_id;
     u64 build_id;
@@ -290,7 +292,7 @@ void SynchronizeInternal(AM::Applets::AppletManager& applet_manager, DirectoryGe
         LOG_ERROR(Service_BCAT, "Boxcat synchronization failed with error '{}'!", res);
 
         if (res == DownloadResult::NoMatchBuildId || res == DownloadResult::NoMatchTitleId) {
-            FileUtil::Delete(zip_path);
+            Common::FS::Delete(zip_path);
         }
 
         HandleDownloadDisplayResult(applet_manager, res);
@@ -300,7 +302,7 @@ void SynchronizeInternal(AM::Applets::AppletManager& applet_manager, DirectoryGe
 
     progress.StartProcessingDataList();
 
-    FileUtil::IOFile zip{zip_path, "rb"};
+    Common::FS::IOFile zip{zip_path, "rb"};
     const auto size = zip.GetSize();
     std::vector<u8> bytes(size);
     if (!zip.IsOpen() || size == 0 || zip.ReadBytes(bytes.data(), bytes.size()) != bytes.size()) {
@@ -365,8 +367,7 @@ bool Boxcat::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress)
 
     std::thread([this, title, &progress] {
         SynchronizeInternal(applet_manager, dir_getter, title, progress);
-    })
-        .detach();
+    }).detach();
 
     return true;
 }
@@ -377,8 +378,7 @@ bool Boxcat::SynchronizeDirectory(TitleIDVersion title, std::string name,
 
     std::thread([this, title, name, &progress] {
         SynchronizeInternal(applet_manager, dir_getter, title, progress, name);
-    })
-        .detach();
+    }).detach();
 
     return true;
 }
@@ -422,7 +422,7 @@ std::optional<std::vector<u8>> Boxcat::GetLaunchParameter(TitleIDVersion title) 
             LOG_ERROR(Service_BCAT, "Boxcat synchronization failed with error '{}'!", res);
 
             if (res == DownloadResult::NoMatchBuildId || res == DownloadResult::NoMatchTitleId) {
-                FileUtil::Delete(path);
+                Common::FS::Delete(path);
             }
 
             HandleDownloadDisplayResult(applet_manager, res);
@@ -430,7 +430,7 @@ std::optional<std::vector<u8>> Boxcat::GetLaunchParameter(TitleIDVersion title) 
         }
     }
 
-    FileUtil::IOFile bin{path, "rb"};
+    Common::FS::IOFile bin{path, "rb"};
     const auto size = bin.GetSize();
     std::vector<u8> bytes(size);
     if (!bin.IsOpen() || size == 0 || bin.ReadBytes(bytes.data(), bytes.size()) != bytes.size()) {
@@ -445,12 +445,24 @@ std::optional<std::vector<u8>> Boxcat::GetLaunchParameter(TitleIDVersion title) 
 Boxcat::StatusResult Boxcat::GetStatus(std::optional<std::string>& global,
                                        std::map<std::string, EventStatus>& games) {
     httplib::SSLClient client{BOXCAT_HOSTNAME, static_cast<int>(PORT)};
-    client.set_timeout_sec(static_cast<int>(TIMEOUT_SECONDS));
+    client.set_connection_timeout(static_cast<int>(TIMEOUT_SECONDS));
+    client.set_read_timeout(static_cast<int>(TIMEOUT_SECONDS));
+    client.set_write_timeout(static_cast<int>(TIMEOUT_SECONDS));
 
     httplib::Headers headers{
         {std::string("Game-Assets-API-Version"), std::string(BOXCAT_API_VERSION)},
         {std::string("Boxcat-Client-Type"), std::string(BOXCAT_CLIENT_TYPE)},
     };
+
+    if (!client.is_valid()) {
+        LOG_ERROR(Service_BCAT, "Client is invalid, going offline!");
+        return StatusResult::Offline;
+    }
+
+    if (!client.is_socket_open()) {
+        LOG_ERROR(Service_BCAT, "Failed to open socket, going offline!");
+        return StatusResult::Offline;
+    }
 
     const auto response = client.Get(BOXCAT_PATHNAME_EVENTS, headers);
     if (response == nullptr)
@@ -471,7 +483,7 @@ Boxcat::StatusResult Boxcat::GetStatus(std::optional<std::string>& global,
             global = json["global"].get<std::string>();
 
         if (json["games"].is_array()) {
-            for (const auto object : json["games"]) {
+            for (const auto& object : json["games"]) {
                 if (object.is_object() && object.find("name") != object.end()) {
                     EventStatus detail{};
                     if (object["header"].is_string()) {

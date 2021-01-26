@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 #include "common/common_types.h"
-#include "common/memory_hook.h"
 
 namespace Common {
 struct PageTable;
@@ -64,7 +63,7 @@ public:
      *
      * @param process The process to use the page table of.
      */
-    void SetCurrentPageTable(Kernel::Process& process);
+    void SetCurrentPageTable(Kernel::Process& process, u32 core_id);
 
     /**
      * Maps an allocated buffer onto a region of the emulated process address space.
@@ -78,17 +77,6 @@ public:
     void MapMemoryRegion(Common::PageTable& page_table, VAddr base, u64 size, PAddr target);
 
     /**
-     * Maps a region of the emulated process address space as a IO region.
-     *
-     * @param page_table   The page table of the emulated process.
-     * @param base         The address to start mapping at. Must be page-aligned.
-     * @param size         The amount of bytes to map. Must be page-aligned.
-     * @param mmio_handler The handler that backs the mapping.
-     */
-    void MapIoRegion(Common::PageTable& page_table, VAddr base, u64 size,
-                     Common::MemoryHookPointer mmio_handler);
-
-    /**
      * Unmaps a region of the emulated process address space.
      *
      * @param page_table The page table of the emulated process.
@@ -96,28 +84,6 @@ public:
      * @param size       The amount of bytes to unmap.
      */
     void UnmapRegion(Common::PageTable& page_table, VAddr base, u64 size);
-
-    /**
-     * Adds a memory hook to intercept reads and writes to given region of memory.
-     *
-     * @param page_table The page table of the emulated process
-     * @param base       The starting address to apply the hook to.
-     * @param size       The size of the memory region to apply the hook to, in bytes.
-     * @param hook       The hook to apply to the region of memory.
-     */
-    void AddDebugHook(Common::PageTable& page_table, VAddr base, u64 size,
-                      Common::MemoryHookPointer hook);
-
-    /**
-     * Removes a memory hook from a given range of memory.
-     *
-     * @param page_table The page table of the emulated process.
-     * @param base       The starting address to remove the hook from.
-     * @param size       The size of the memory region to remove the hook from, in bytes.
-     * @param hook       The hook to remove from the specified region of memory.
-     */
-    void RemoveDebugHook(Common::PageTable& page_table, VAddr base, u64 size,
-                         Common::MemoryHookPointer hook);
 
     /**
      * Checks whether or not the supplied address is a valid virtual
@@ -243,6 +209,71 @@ public:
      * @post The memory range [addr, sizeof(data)) contains the given data value.
      */
     void Write64(VAddr addr, u64 data);
+
+    /**
+     * Writes a 8-bit unsigned integer to the given virtual address in
+     * the current process' address space if and only if the address contains
+     * the expected value. This operation is atomic.
+     *
+     * @param addr The virtual address to write the 8-bit unsigned integer to.
+     * @param data The 8-bit unsigned integer to write to the given virtual address.
+     * @param expected The 8-bit unsigned integer to check against the given virtual address.
+     *
+     * @post The memory range [addr, sizeof(data)) contains the given data value.
+     */
+    bool WriteExclusive8(VAddr addr, u8 data, u8 expected);
+
+    /**
+     * Writes a 16-bit unsigned integer to the given virtual address in
+     * the current process' address space if and only if the address contains
+     * the expected value. This operation is atomic.
+     *
+     * @param addr The virtual address to write the 16-bit unsigned integer to.
+     * @param data The 16-bit unsigned integer to write to the given virtual address.
+     * @param expected The 16-bit unsigned integer to check against the given virtual address.
+     *
+     * @post The memory range [addr, sizeof(data)) contains the given data value.
+     */
+    bool WriteExclusive16(VAddr addr, u16 data, u16 expected);
+
+    /**
+     * Writes a 32-bit unsigned integer to the given virtual address in
+     * the current process' address space if and only if the address contains
+     * the expected value. This operation is atomic.
+     *
+     * @param addr The virtual address to write the 32-bit unsigned integer to.
+     * @param data The 32-bit unsigned integer to write to the given virtual address.
+     * @param expected The 32-bit unsigned integer to check against the given virtual address.
+     *
+     * @post The memory range [addr, sizeof(data)) contains the given data value.
+     */
+    bool WriteExclusive32(VAddr addr, u32 data, u32 expected);
+
+    /**
+     * Writes a 64-bit unsigned integer to the given virtual address in
+     * the current process' address space if and only if the address contains
+     * the expected value. This operation is atomic.
+     *
+     * @param addr The virtual address to write the 64-bit unsigned integer to.
+     * @param data The 64-bit unsigned integer to write to the given virtual address.
+     * @param expected The 64-bit unsigned integer to check against the given virtual address.
+     *
+     * @post The memory range [addr, sizeof(data)) contains the given data value.
+     */
+    bool WriteExclusive64(VAddr addr, u64 data, u64 expected);
+
+    /**
+     * Writes a 128-bit unsigned integer to the given virtual address in
+     * the current process' address space if and only if the address contains
+     * the expected value. This operation is atomic.
+     *
+     * @param addr The virtual address to write the 128-bit unsigned integer to.
+     * @param data The 128-bit unsigned integer to write to the given virtual address.
+     * @param expected The 128-bit unsigned integer to check against the given virtual address.
+     *
+     * @post The memory range [addr, sizeof(data)) contains the given data value.
+     */
+    bool WriteExclusive128(VAddr addr, u128 data, u128 expected);
 
     /**
      * Reads a null-terminated string from the given virtual address.

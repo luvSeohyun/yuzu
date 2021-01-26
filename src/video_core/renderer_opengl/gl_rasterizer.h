@@ -7,11 +7,12 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <optional>
 #include <tuple>
 #include <utility>
+
+#include <boost/container/static_vector.hpp>
 
 #include <glad/glad.h>
 
@@ -19,25 +20,23 @@
 #include "video_core/engines/const_buffer_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/rasterizer_accelerated.h"
-#include "video_core/rasterizer_cache.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_opengl/gl_buffer_cache.h"
 #include "video_core/renderer_opengl/gl_device.h"
 #include "video_core/renderer_opengl/gl_fence_manager.h"
-#include "video_core/renderer_opengl/gl_framebuffer_cache.h"
 #include "video_core/renderer_opengl/gl_query_cache.h"
 #include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_sampler_cache.h"
 #include "video_core/renderer_opengl/gl_shader_cache.h"
 #include "video_core/renderer_opengl/gl_shader_decompiler.h"
 #include "video_core/renderer_opengl/gl_shader_manager.h"
 #include "video_core/renderer_opengl/gl_state_tracker.h"
+#include "video_core/renderer_opengl/gl_stream_buffer.h"
 #include "video_core/renderer_opengl/gl_texture_cache.h"
-#include "video_core/renderer_opengl/utils.h"
+#include "video_core/shader/async_shaders.h"
 #include "video_core/textures/texture.h"
 
-namespace Core {
-class System;
+namespace Core::Memory {
+class Memory;
 }
 
 namespace Core::Frontend {
@@ -51,13 +50,21 @@ class MemoryManager;
 namespace OpenGL {
 
 struct ScreenInfo;
-struct DrawParameters;
+struct ShaderEntries;
+
+struct BindlessSSBO {
+    GLuint64EXT address;
+    GLsizei length;
+    GLsizei padding;
+};
+static_assert(sizeof(BindlessSSBO) * CHAR_BIT == 128);
 
 class RasterizerOpenGL : public VideoCore::RasterizerAccelerated {
 public:
-    explicit RasterizerOpenGL(Core::System& system, Core::Frontend::EmuWindow& emu_window,
-                              const Device& device, ScreenInfo& info,
-                              ProgramManager& program_manager, StateTracker& state_tracker);
+    explicit RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra::GPU& gpu_,
+                              Core::Memory::Memory& cpu_memory_, const Device& device_,
+                              ScreenInfo& screen_info_, ProgramManager& program_manager_,
+                              StateTracker& state_tracker_);
     ~RasterizerOpenGL() override;
 
     void Draw(bool is_indexed, bool is_instanced) override;
@@ -71,72 +78,79 @@ public:
     void InvalidateRegion(VAddr addr, u64 size) override;
     void OnCPUWrite(VAddr addr, u64 size) override;
     void SyncGuestHost() override;
+    void UnmapMemory(VAddr addr, u64 size) override;
     void SignalSemaphore(GPUVAddr addr, u32 value) override;
     void SignalSyncPoint(u32 value) override;
     void ReleaseFences() override;
     void FlushAndInvalidateRegion(VAddr addr, u64 size) override;
     void WaitForIdle() override;
+    void FragmentBarrier() override;
+    void TiledCacheBarrier() override;
     void FlushCommands() override;
     void TickFrame() override;
-    bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Regs::Surface& src,
-                               const Tegra::Engines::Fermi2D::Regs::Surface& dst,
+    bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
+                               const Tegra::Engines::Fermi2D::Surface& dst,
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
     bool AccelerateDisplay(const Tegra::FramebufferConfig& config, VAddr framebuffer_addr,
                            u32 pixel_stride) override;
-    void LoadDiskResources(const std::atomic_bool& stop_loading,
+    void LoadDiskResources(u64 title_id, const std::atomic_bool& stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback) override;
-    void SetupDirtyFlags() override;
 
     /// Returns true when there are commands queued to the OpenGL server.
     bool AnyCommandQueued() const {
         return num_queued_commands > 0;
     }
 
-private:
-    /// Configures the color and depth framebuffer states.
-    void ConfigureFramebuffers();
+    VideoCommon::Shader::AsyncShaders& GetAsyncShaders() {
+        return async_shaders;
+    }
 
-    /// Configures the color and depth framebuffer for clearing.
-    void ConfigureClearFramebuffer(bool using_color, bool using_depth_stencil);
+    const VideoCommon::Shader::AsyncShaders& GetAsyncShaders() const {
+        return async_shaders;
+    }
+
+private:
+    static constexpr size_t MAX_TEXTURES = 192;
+    static constexpr size_t MAX_IMAGES = 48;
+    static constexpr size_t MAX_IMAGE_VIEWS = MAX_TEXTURES + MAX_IMAGES;
+
+    void BindComputeTextures(Shader* kernel);
+
+    void BindTextures(const ShaderEntries& entries, GLuint base_texture, GLuint base_image,
+                      size_t& image_view_index, size_t& texture_index, size_t& image_index);
 
     /// Configures the current constbuffers to use for the draw command.
-    void SetupDrawConstBuffers(std::size_t stage_index, const Shader& shader);
+    void SetupDrawConstBuffers(std::size_t stage_index, Shader* shader);
 
     /// Configures the current constbuffers to use for the kernel invocation.
-    void SetupComputeConstBuffers(const Shader& kernel);
+    void SetupComputeConstBuffers(Shader* kernel);
 
     /// Configures a constant buffer.
     void SetupConstBuffer(GLenum stage, u32 binding, const Tegra::Engines::ConstBufferInfo& buffer,
-                          const ConstBufferEntry& entry);
+                          const ConstBufferEntry& entry, bool use_unified,
+                          std::size_t unified_offset);
 
     /// Configures the current global memory entries to use for the draw command.
-    void SetupDrawGlobalMemory(std::size_t stage_index, const Shader& shader);
+    void SetupDrawGlobalMemory(std::size_t stage_index, Shader* shader);
 
     /// Configures the current global memory entries to use for the kernel invocation.
-    void SetupComputeGlobalMemory(const Shader& kernel);
+    void SetupComputeGlobalMemory(Shader* kernel);
 
-    /// Configures a constant buffer.
+    /// Configures a global memory buffer.
     void SetupGlobalMemory(u32 binding, const GlobalMemoryEntry& entry, GPUVAddr gpu_addr,
-                           std::size_t size);
+                           size_t size, BindlessSSBO* ssbo);
 
     /// Configures the current textures to use for the draw command.
-    void SetupDrawTextures(std::size_t stage_index, const Shader& shader);
+    void SetupDrawTextures(const Shader* shader, size_t stage_index);
 
     /// Configures the textures used in a compute shader.
-    void SetupComputeTextures(const Shader& kernel);
-
-    /// Configures a texture.
-    void SetupTexture(u32 binding, const Tegra::Texture::FullTextureInfo& texture,
-                      const SamplerEntry& entry);
+    void SetupComputeTextures(const Shader* kernel);
 
     /// Configures images in a graphics shader.
-    void SetupDrawImages(std::size_t stage_index, const Shader& shader);
+    void SetupDrawImages(const Shader* shader, size_t stage_index);
 
     /// Configures images in a compute shader.
-    void SetupComputeImages(const Shader& shader);
-
-    /// Configures an image.
-    void SetupImage(u32 binding, const Tegra::Texture::TICEntry& tic, const ImageEntry& entry);
+    void SetupComputeImages(const Shader* shader);
 
     /// Syncs the viewport and depth range to match the guest state
     void SyncViewport();
@@ -201,14 +215,15 @@ private:
     /// Syncs the framebuffer sRGB state to match the guest state
     void SyncFramebufferSRGB();
 
+    /// Syncs transform feedback state to match guest state
+    /// @note Only valid on assembly shaders
+    void SyncTransformFeedback();
+
     /// Begin a transform feedback
     void BeginTransformFeedback(GLenum primitive_mode);
 
     /// End a transform feedback
     void EndTransformFeedback();
-
-    /// Check for extension that are not strictly required but are needed for correct emulation
-    void CheckExtensions();
 
     std::size_t CalculateVertexArraysSize() const;
 
@@ -222,26 +237,33 @@ private:
 
     GLintptr SetupIndexBuffer();
 
-    void SetupShaders(GLenum primitive_mode);
+    void SetupShaders();
+
+    Tegra::GPU& gpu;
+    Tegra::Engines::Maxwell3D& maxwell3d;
+    Tegra::Engines::KeplerCompute& kepler_compute;
+    Tegra::MemoryManager& gpu_memory;
 
     const Device& device;
-
-    TextureCacheOpenGL texture_cache;
-    ShaderCacheOpenGL shader_cache;
-    SamplerCacheOpenGL sampler_cache;
-    FramebufferCacheOpenGL framebuffer_cache;
-    QueryCache query_cache;
-    OGLBufferCache buffer_cache;
-    FenceManagerOpenGL fence_manager;
-
-    Core::System& system;
     ScreenInfo& screen_info;
     ProgramManager& program_manager;
     StateTracker& state_tracker;
 
-    static constexpr std::size_t STREAM_BUFFER_SIZE = 128 * 1024 * 1024;
+    OGLStreamBuffer stream_buffer;
+    TextureCacheRuntime texture_cache_runtime;
+    TextureCache texture_cache;
+    ShaderCacheOpenGL shader_cache;
+    QueryCache query_cache;
+    OGLBufferCache buffer_cache;
+    FenceManagerOpenGL fence_manager;
 
-    GLint vertex_binding = 0;
+    VideoCommon::Shader::AsyncShaders async_shaders;
+
+    boost::container::static_vector<u32, MAX_IMAGE_VIEWS> image_view_indices;
+    std::array<ImageViewId, MAX_IMAGE_VIEWS> image_view_ids;
+    boost::container::static_vector<GLuint, MAX_TEXTURES> sampler_handles;
+    std::array<GLuint, MAX_TEXTURES> texture_handles;
+    std::array<GLuint, MAX_IMAGES> image_handles;
 
     std::array<OGLBuffer, Tegra::Engines::Maxwell3D::Regs::NumTransformFeedbackBuffers>
         transform_feedback_buffers;
@@ -253,8 +275,9 @@ private:
         Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram;
     std::array<GLuint, NUM_CONSTANT_BUFFERS> staging_cbufs{};
     std::size_t current_cbuf = 0;
+    OGLBuffer unified_uniform_buffer;
 
-    /// Number of commands queued to the OpenGL driver. Reseted on flush.
+    /// Number of commands queued to the OpenGL driver. Resetted on flush.
     std::size_t num_queued_commands = 0;
 
     u32 last_clip_distance_mask = 0;

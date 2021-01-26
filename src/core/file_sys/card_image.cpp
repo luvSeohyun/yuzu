@@ -8,11 +8,11 @@
 #include <fmt/ostream.h>
 
 #include "common/logging/log.h"
+#include "core/crypto/key_manager.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/partition_filesystem.h"
-#include "core/file_sys/romfs.h"
 #include "core/file_sys/submission_package.h"
 #include "core/file_sys/vfs_concat.h"
 #include "core/file_sys/vfs_offset.h"
@@ -29,9 +29,10 @@ constexpr std::array partition_names{
     "logo",
 };
 
-XCI::XCI(VirtualFile file_)
+XCI::XCI(VirtualFile file_, std::size_t program_index)
     : file(std::move(file_)), program_nca_status{Loader::ResultStatus::ErrorXCIMissingProgramNCA},
-      partitions(partition_names.size()), partitions_raw(partition_names.size()) {
+      partitions(partition_names.size()),
+      partitions_raw(partition_names.size()), keys{Core::Crypto::KeyManager::Instance()} {
     if (file->ReadObject(&header) != sizeof(GamecardHeader)) {
         status = Loader::ResultStatus::ErrorBadXCIHeader;
         return;
@@ -61,7 +62,8 @@ XCI::XCI(VirtualFile file_)
     }
 
     secure_partition = std::make_shared<NSP>(
-        main_hfs.GetFile(partition_names[static_cast<std::size_t>(XCIPartition::Secure)]));
+        main_hfs.GetFile(partition_names[static_cast<std::size_t>(XCIPartition::Secure)]),
+        program_index);
 
     ncas = secure_partition->GetNCAsCollapsed();
     program =
@@ -178,7 +180,7 @@ u32 XCI::GetSystemUpdateVersion() {
         return 0;
 
     for (const auto& file : update->GetFiles()) {
-        NCA nca{file, nullptr, 0, keys};
+        NCA nca{file, nullptr, 0};
 
         if (nca.GetStatus() != Loader::ResultStatus::Success)
             continue;
@@ -286,7 +288,7 @@ Loader::ResultStatus XCI::AddNCAFromPartition(XCIPartition part) {
             continue;
         }
 
-        auto nca = std::make_shared<NCA>(file, nullptr, 0, keys);
+        auto nca = std::make_shared<NCA>(file, nullptr, 0);
         if (nca->IsUpdate()) {
             continue;
         }

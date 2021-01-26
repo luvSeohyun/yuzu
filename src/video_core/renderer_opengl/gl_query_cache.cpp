@@ -30,12 +30,9 @@ constexpr GLenum GetTarget(VideoCore::QueryType type) {
 
 } // Anonymous namespace
 
-QueryCache::QueryCache(Core::System& system, RasterizerOpenGL& gl_rasterizer)
-    : VideoCommon::QueryCacheBase<
-          QueryCache, CachedQuery, CounterStream, HostCounter,
-          std::vector<OGLQuery>>{system,
-                                 static_cast<VideoCore::RasterizerInterface&>(gl_rasterizer)},
-      gl_rasterizer{gl_rasterizer} {}
+QueryCache::QueryCache(RasterizerOpenGL& rasterizer_, Tegra::Engines::Maxwell3D& maxwell3d_,
+                       Tegra::MemoryManager& gpu_memory_)
+    : QueryCacheBase(rasterizer_, maxwell3d_, gpu_memory_), gl_rasterizer{rasterizer_} {}
 
 QueryCache::~QueryCache() = default;
 
@@ -60,10 +57,11 @@ bool QueryCache::AnyCommandQueued() const noexcept {
     return gl_rasterizer.AnyCommandQueued();
 }
 
-HostCounter::HostCounter(QueryCache& cache, std::shared_ptr<HostCounter> dependency,
-                         VideoCore::QueryType type)
-    : VideoCommon::HostCounterBase<QueryCache, HostCounter>{std::move(dependency)}, cache{cache},
-      type{type}, query{cache.AllocateQuery(type)} {
+HostCounter::HostCounter(QueryCache& cache_, std::shared_ptr<HostCounter> dependency_,
+                         VideoCore::QueryType type_)
+    : HostCounterBase{std::move(dependency_)}, cache{cache_}, type{type_}, query{
+                                                                               cache.AllocateQuery(
+                                                                                   type)} {
     glBeginQuery(GetTarget(type), query.handle);
 }
 
@@ -87,11 +85,14 @@ u64 HostCounter::BlockingQuery() const {
     return static_cast<u64>(value);
 }
 
-CachedQuery::CachedQuery(QueryCache& cache, VideoCore::QueryType type, VAddr cpu_addr, u8* host_ptr)
-    : VideoCommon::CachedQueryBase<HostCounter>{cpu_addr, host_ptr}, cache{&cache}, type{type} {}
+CachedQuery::CachedQuery(QueryCache& cache_, VideoCore::QueryType type_, VAddr cpu_addr_,
+                         u8* host_ptr_)
+    : CachedQueryBase{cpu_addr_, host_ptr_}, cache{&cache_}, type{type_} {}
+
+CachedQuery::~CachedQuery() = default;
 
 CachedQuery::CachedQuery(CachedQuery&& rhs) noexcept
-    : VideoCommon::CachedQueryBase<HostCounter>(std::move(rhs)), cache{rhs.cache}, type{rhs.type} {}
+    : CachedQueryBase(std::move(rhs)), cache{rhs.cache}, type{rhs.type} {}
 
 CachedQuery& CachedQuery::operator=(CachedQuery&& rhs) noexcept {
     cache = rhs.cache;

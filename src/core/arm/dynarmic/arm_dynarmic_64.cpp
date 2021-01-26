@@ -6,18 +6,17 @@
 #include <memory>
 #include <dynarmic/A64/a64.h>
 #include <dynarmic/A64/config.h>
+#include "common/assert.h"
 #include "common/logging/log.h"
-#include "common/microprofile.h"
 #include "common/page_table.h"
+#include "core/arm/cpu_interrupt_handler.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
+#include "core/arm/dynarmic/arm_exclusive_monitor.h"
 #include "core/core.h"
-#include "core/core_manager.h"
 #include "core/core_timing.h"
-#include "core/core_timing_util.h"
-#include "core/gdbstub/gdbstub.h"
 #include "core/hardware_properties.h"
+#include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/process.h"
-#include "core/hle/kernel/scheduler.h"
 #include "core/hle/kernel/svc.h"
 #include "core/memory.h"
 #include "core/settings.h"
@@ -65,17 +64,26 @@ public:
         memory.Write64(vaddr + 8, value[1]);
     }
 
-    void InterpreterFallback(u64 pc, std::size_t num_instructions) override {
-        LOG_INFO(Core_ARM, "Unicorn fallback @ 0x{:X} for {} instructions (instr = {:08X})", pc,
-                 num_instructions, MemoryReadCode(pc));
+    bool MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected) override {
+        return parent.system.Memory().WriteExclusive8(vaddr, value, expected);
+    }
+    bool MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected) override {
+        return parent.system.Memory().WriteExclusive16(vaddr, value, expected);
+    }
+    bool MemoryWriteExclusive32(u64 vaddr, std::uint32_t value, std::uint32_t expected) override {
+        return parent.system.Memory().WriteExclusive32(vaddr, value, expected);
+    }
+    bool MemoryWriteExclusive64(u64 vaddr, std::uint64_t value, std::uint64_t expected) override {
+        return parent.system.Memory().WriteExclusive64(vaddr, value, expected);
+    }
+    bool MemoryWriteExclusive128(u64 vaddr, Vector value, Vector expected) override {
+        return parent.system.Memory().WriteExclusive128(vaddr, value, expected);
+    }
 
-        ARM_Interface::ThreadContext64 ctx;
-        parent.SaveContext(ctx);
-        parent.inner_unicorn.LoadContext(ctx);
-        parent.inner_unicorn.ExecuteInstructions(num_instructions);
-        parent.inner_unicorn.SaveContext(ctx);
-        parent.LoadContext(ctx);
-        num_interpreted_instructions += num_instructions;
+    void InterpreterFallback(u64 pc, std::size_t num_instructions) override {
+        LOG_ERROR(Core_ARM,
+                  "Unimplemented instruction @ 0x{:X} for {} instructions (instr = {:08X})", pc,
+                  num_instructions, MemoryReadCode(pc));
     }
 
     void ExceptionRaised(u64 pc, Dynarmic::A64::Exception exception) override {
@@ -87,19 +95,9 @@ public:
         case Dynarmic::A64::Exception::Yield:
             return;
         case Dynarmic::A64::Exception::Breakpoint:
-            if (GDBStub::IsServerEnabled()) {
-                parent.jit->HaltExecution();
-                parent.SetPC(pc);
-                Kernel::Thread* const thread = parent.system.CurrentScheduler().GetCurrentThread();
-                parent.SaveContext(thread->GetContext64());
-                GDBStub::Break();
-                GDBStub::SendTrap(thread, 5);
-                return;
-            }
-            [[fallthrough]];
         default:
-            ASSERT_MSG(false, "ExceptionRaised(exception = {}, pc = {:X})",
-                       static_cast<std::size_t>(exception), pc);
+            ASSERT_MSG(false, "ExceptionRaised(exception = {}, pc = {:08X}, code = {:08X})",
+                       static_cast<std::size_t>(exception), pc, MemoryReadCode(pc));
         }
     }
 
@@ -108,29 +106,40 @@ public:
     }
 
     void AddTicks(u64 ticks) override {
+        if (parent.uses_wall_clock) {
+            return;
+        }
+
         // Divide the number of ticks by the amount of CPU cores. TODO(Subv): This yields only a
         // rough approximation of the amount of executed ticks in the system, it may be thrown off
         // if not all cores are doing a similar amount of work. Instead of doing this, we should
         // device a way so that timing is consistent across all cores without increasing the ticks 4
         // times.
-        u64 amortized_ticks = (ticks - num_interpreted_instructions) / Core::NUM_CPU_CORES;
+        u64 amortized_ticks = ticks / Core::Hardware::NUM_CPU_CORES;
         // Always execute at least one tick.
         amortized_ticks = std::max<u64>(amortized_ticks, 1);
 
         parent.system.CoreTiming().AddTicks(amortized_ticks);
-        num_interpreted_instructions = 0;
     }
+
     u64 GetTicksRemaining() override {
-        return std::max(parent.system.CoreTiming().GetDowncount(), s64{0});
+        if (parent.uses_wall_clock) {
+            if (!parent.interrupt_handlers[parent.core_index].IsInterrupted()) {
+                return minimum_run_cycles;
+            }
+            return 0U;
+        }
+        return std::max<s64>(parent.system.CoreTiming().GetDowncount(), 0);
     }
+
     u64 GetCNTPCT() override {
-        return Timing::CpuCyclesToClockCycles(parent.system.CoreTiming().GetTicks());
+        return parent.system.CoreTiming().GetClockTicks();
     }
 
     ARM_Dynarmic_64& parent;
-    std::size_t num_interpreted_instructions = 0;
     u64 tpidrro_el0 = 0;
     u64 tpidr_el0 = 0;
+    static constexpr u64 minimum_run_cycles = 1000U;
 };
 
 std::shared_ptr<Dynarmic::A64::Jit> ARM_Dynarmic_64::MakeJit(Common::PageTable& page_table,
@@ -143,6 +152,7 @@ std::shared_ptr<Dynarmic::A64::Jit> ARM_Dynarmic_64::MakeJit(Common::PageTable& 
     // Memory
     config.page_table = reinterpret_cast<void**>(page_table.pointers.data());
     config.page_table_address_space_bits = address_space_bits;
+    config.page_table_pointer_mask_bits = Common::PageTable::ATTRIBUTE_BITS;
     config.silently_mirror_page_table = false;
     config.absolute_offset_page_table = true;
     config.detect_misaligned_access_via_page_table = 16 | 32 | 64 | 128;
@@ -162,31 +172,71 @@ std::shared_ptr<Dynarmic::A64::Jit> ARM_Dynarmic_64::MakeJit(Common::PageTable& 
     // Unpredictable instructions
     config.define_unpredictable_behaviour = true;
 
-    // Optimizations
-    if (Settings::values.disable_cpu_opt) {
-        config.enable_optimizations = false;
-        config.enable_fast_dispatch = false;
+    // Timing
+    config.wall_clock_cntpct = uses_wall_clock;
+
+    // Safe optimizations
+    if (Settings::values.cpu_accuracy == Settings::CPUAccuracy::DebugMode) {
+        if (!Settings::values.cpuopt_page_tables) {
+            config.page_table = nullptr;
+        }
+        if (!Settings::values.cpuopt_block_linking) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::BlockLinking;
+        }
+        if (!Settings::values.cpuopt_return_stack_buffer) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::ReturnStackBuffer;
+        }
+        if (!Settings::values.cpuopt_fast_dispatcher) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::FastDispatch;
+        }
+        if (!Settings::values.cpuopt_context_elimination) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::GetSetElimination;
+        }
+        if (!Settings::values.cpuopt_const_prop) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::ConstProp;
+        }
+        if (!Settings::values.cpuopt_misc_ir) {
+            config.optimizations &= ~Dynarmic::OptimizationFlag::MiscIROpt;
+        }
+        if (!Settings::values.cpuopt_reduce_misalign_checks) {
+            config.only_detect_misalignment_via_page_table_on_page_boundary = false;
+        }
+    }
+
+    // Unsafe optimizations
+    if (Settings::values.cpu_accuracy == Settings::CPUAccuracy::Unsafe) {
+        config.unsafe_optimizations = true;
+        if (Settings::values.cpuopt_unsafe_unfuse_fma) {
+            config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA;
+        }
+        if (Settings::values.cpuopt_unsafe_reduce_fp_error) {
+            config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_ReducedErrorFP;
+        }
+        if (Settings::values.cpuopt_unsafe_inaccurate_nan) {
+            config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_InaccurateNaN;
+        }
     }
 
     return std::make_shared<Dynarmic::A64::Jit>(config);
 }
 
-MICROPROFILE_DEFINE(ARM_Jit_Dynarmic_64, "ARM JIT", "Dynarmic", MP_RGB(255, 64, 64));
-
 void ARM_Dynarmic_64::Run() {
-    MICROPROFILE_SCOPE(ARM_Jit_Dynarmic_64);
-
     jit->Run();
+}
+
+void ARM_Dynarmic_64::ExceptionalExit() {
+    jit->ExceptionalExit();
 }
 
 void ARM_Dynarmic_64::Step() {
     cb->InterpreterFallback(jit->GetPC(), 1);
 }
 
-ARM_Dynarmic_64::ARM_Dynarmic_64(System& system, ExclusiveMonitor& exclusive_monitor,
+ARM_Dynarmic_64::ARM_Dynarmic_64(System& system, CPUInterrupts& interrupt_handlers,
+                                 bool uses_wall_clock, ExclusiveMonitor& exclusive_monitor,
                                  std::size_t core_index)
-    : ARM_Interface{system}, cb(std::make_unique<DynarmicCallbacks64>(*this)),
-      inner_unicorn{system, ARM_Unicorn::Arch::AArch64}, core_index{core_index},
+    : ARM_Interface{system, interrupt_handlers, uses_wall_clock},
+      cb(std::make_unique<DynarmicCallbacks64>(*this)), core_index{core_index},
       exclusive_monitor{dynamic_cast<DynarmicExclusiveMonitor&>(exclusive_monitor)} {}
 
 ARM_Dynarmic_64::~ARM_Dynarmic_64() = default;
@@ -239,6 +289,10 @@ void ARM_Dynarmic_64::SetTPIDR_EL0(u64 value) {
     cb->tpidr_el0 = value;
 }
 
+void ARM_Dynarmic_64::ChangeProcessorID(std::size_t new_core_id) {
+    jit->ChangeProcessorID(new_core_id);
+}
+
 void ARM_Dynarmic_64::SaveContext(ThreadContext64& ctx) {
     ctx.cpu_registers = jit->GetRegisters();
     ctx.sp = jit->GetSP();
@@ -266,10 +320,23 @@ void ARM_Dynarmic_64::PrepareReschedule() {
 }
 
 void ARM_Dynarmic_64::ClearInstructionCache() {
+    if (!jit) {
+        return;
+    }
     jit->ClearCache();
 }
 
+void ARM_Dynarmic_64::InvalidateCacheRange(VAddr addr, std::size_t size) {
+    if (!jit) {
+        return;
+    }
+    jit->InvalidateCacheRange(addr, size);
+}
+
 void ARM_Dynarmic_64::ClearExclusiveState() {
+    if (!jit) {
+        return;
+    }
     jit->ClearExclusiveState();
 }
 
@@ -283,46 +350,6 @@ void ARM_Dynarmic_64::PageTableChanged(Common::PageTable& page_table,
     }
     jit = MakeJit(page_table, new_address_space_size_in_bits);
     jit_cache.emplace(key, jit);
-}
-
-DynarmicExclusiveMonitor::DynarmicExclusiveMonitor(Memory::Memory& memory, std::size_t core_count)
-    : monitor(core_count), memory{memory} {}
-
-DynarmicExclusiveMonitor::~DynarmicExclusiveMonitor() = default;
-
-void DynarmicExclusiveMonitor::SetExclusive(std::size_t core_index, VAddr addr) {
-    // Size doesn't actually matter.
-    monitor.Mark(core_index, addr, 16);
-}
-
-void DynarmicExclusiveMonitor::ClearExclusive() {
-    monitor.Clear();
-}
-
-bool DynarmicExclusiveMonitor::ExclusiveWrite8(std::size_t core_index, VAddr vaddr, u8 value) {
-    return monitor.DoExclusiveOperation(core_index, vaddr, 1, [&] { memory.Write8(vaddr, value); });
-}
-
-bool DynarmicExclusiveMonitor::ExclusiveWrite16(std::size_t core_index, VAddr vaddr, u16 value) {
-    return monitor.DoExclusiveOperation(core_index, vaddr, 2,
-                                        [&] { memory.Write16(vaddr, value); });
-}
-
-bool DynarmicExclusiveMonitor::ExclusiveWrite32(std::size_t core_index, VAddr vaddr, u32 value) {
-    return monitor.DoExclusiveOperation(core_index, vaddr, 4,
-                                        [&] { memory.Write32(vaddr, value); });
-}
-
-bool DynarmicExclusiveMonitor::ExclusiveWrite64(std::size_t core_index, VAddr vaddr, u64 value) {
-    return monitor.DoExclusiveOperation(core_index, vaddr, 8,
-                                        [&] { memory.Write64(vaddr, value); });
-}
-
-bool DynarmicExclusiveMonitor::ExclusiveWrite128(std::size_t core_index, VAddr vaddr, u128 value) {
-    return monitor.DoExclusiveOperation(core_index, vaddr, 16, [&] {
-        memory.Write64(vaddr + 0, value[0]);
-        memory.Write64(vaddr + 8, value[1]);
-    });
 }
 
 } // namespace Core

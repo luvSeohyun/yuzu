@@ -152,9 +152,11 @@ typedef uint16_t MicroProfileGroupId;
 
 #include <stdint.h>
 #include <string.h>
-#include <thread>
-#include <mutex>
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <mutex>
+#include <thread>
 
 #ifndef MICROPROFILE_API
 #define MICROPROFILE_API
@@ -605,28 +607,45 @@ struct MicroProfileFrameState
 
 struct MicroProfileThreadLog
 {
-    MicroProfileLogEntry    Log[MICROPROFILE_BUFFER_SIZE];
+    std::array<MicroProfileLogEntry, MICROPROFILE_BUFFER_SIZE> Log{};
 
-    std::atomic<uint32_t>   nPut;
-    std::atomic<uint32_t>   nGet;
-    uint32_t                nActive;
-    uint32_t                nGpu;
-    ThreadIdType            nThreadId;
+    std::atomic<uint32_t>   nPut{0};
+    std::atomic<uint32_t>   nGet{0};
+    uint32_t                nActive = 0;
+    uint32_t                nGpu = 0;
+    ThreadIdType            nThreadId{};
 
-    uint32_t                nStack[MICROPROFILE_STACK_MAX];
-    int64_t                 nChildTickStack[MICROPROFILE_STACK_MAX];
-    uint32_t                nStackPos;
+    std::array<uint32_t, MICROPROFILE_STACK_MAX> nStack{};
+    std::array<int64_t, MICROPROFILE_STACK_MAX>  nChildTickStack{};
+    uint32_t                                     nStackPos = 0;
 
 
-    uint8_t                 nGroupStackPos[MICROPROFILE_MAX_GROUPS];
-    int64_t                 nGroupTicks[MICROPROFILE_MAX_GROUPS];
-    int64_t                 nAggregateGroupTicks[MICROPROFILE_MAX_GROUPS];
+    std::array<uint8_t, MICROPROFILE_MAX_GROUPS> nGroupStackPos{};
+    std::array<int64_t, MICROPROFILE_MAX_GROUPS> nGroupTicks{};
+    std::array<int64_t, MICROPROFILE_MAX_GROUPS> nAggregateGroupTicks{};
     enum
     {
         THREAD_MAX_LEN = 64,
     };
-    char                    ThreadName[64];
-    int                     nFreeListNext;
+    char                    ThreadName[64]{};
+    int                     nFreeListNext = 0;
+
+    void Reset() {
+        Log.fill({});
+        nPut = 0;
+        nGet = 0;
+        nActive = 0;
+        nGpu = 0;
+        nThreadId = {};
+        nStack.fill(0);
+        nChildTickStack.fill(0);
+        nStackPos = 0;
+        nGroupStackPos.fill(0);
+        nGroupTicks.fill(0);
+        nAggregateGroupTicks.fill(0);
+        std::fill(std::begin(ThreadName), std::end(ThreadName), '\0');
+        nFreeListNext = 0;
+    }
 };
 
 #if MICROPROFILE_GPU_TIMERS_D3D11
@@ -883,8 +902,10 @@ inline uint16_t MicroProfileGetGroupIndex(MicroProfileToken t)
 #include <windows.h>
 #define snprintf _snprintf
 
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4244)
+#endif
 int64_t MicroProfileTicksPerSecondCpu()
 {
     static int64_t nTicksPerSecond = 0;
@@ -927,7 +948,11 @@ typedef HANDLE MicroProfileThread;
 DWORD _stdcall ThreadTrampoline(void* pFunc)
 {
     MicroProfileThreadFunc F = (MicroProfileThreadFunc)pFunc;
-    return (uint32_t)F(0);
+
+    // The return value of F will always return a void*, however, this is for
+    // compatibility with pthreads. The underlying "address" of the pointer
+    // is always a 32-bit value, so this cast is safe to perform.
+    return static_cast<DWORD>(reinterpret_cast<uint64_t>(F(0)));
 }
 
 inline void MicroProfileThreadStart(MicroProfileThread* pThread, MicroProfileThreadFunc Func)
@@ -1018,7 +1043,7 @@ static void MicroProfileCreateThreadLogKey()
 #else
 MP_THREAD_LOCAL MicroProfileThreadLog* g_MicroProfileThreadLog = 0;
 #endif
-static bool g_bUseLock = false; /// This is used because windows does not support using mutexes under dll init(which is where global initialization is handled)
+static std::atomic<bool> g_bUseLock{false}; /// This is used because windows does not support using mutexes under dll init(which is where global initialization is handled)
 
 
 MICROPROFILE_DEFINE(g_MicroProfileFlip, "MicroProfile", "MicroProfileFlip", 0x3355ee);
@@ -1151,6 +1176,7 @@ MicroProfileThreadLog* MicroProfileCreateThreadLog(const char* pName)
         MP_ASSERT(pLog->nPut.load() == 0);
         MP_ASSERT(pLog->nGet.load() == 0);
         S.nFreeListHead = S.Pool[S.nFreeListHead]->nFreeListNext;
+        pLog->Reset();
     }
     else
     {
@@ -1158,7 +1184,6 @@ MicroProfileThreadLog* MicroProfileCreateThreadLog(const char* pName)
         S.nMemUsage += sizeof(MicroProfileThreadLog);
         S.Pool[S.nNumLogs++] = pLog;
     }
-    memset(pLog, 0, sizeof(*pLog));
     int len = (int)strlen(pName);
     int maxlen = sizeof(pLog->ThreadName)-1;
     len = len < maxlen ? len : maxlen;
@@ -1206,8 +1231,8 @@ void MicroProfileOnThreadExit()
         {
             S.Frames[i].nLogStart[nLogIndex] = 0;
         }
-        memset(pLog->nGroupStackPos, 0, sizeof(pLog->nGroupStackPos));
-        memset(pLog->nGroupTicks, 0, sizeof(pLog->nGroupTicks));
+        pLog->nGroupStackPos.fill(0);
+        pLog->nGroupTicks.fill(0);
     }
 }
 
@@ -1723,10 +1748,10 @@ void MicroProfileFlip()
                             }
                         }
                     }
-                    for(uint32_t i = 0; i < MICROPROFILE_MAX_GROUPS; ++i)
+                    for(uint32_t j = 0; j < MICROPROFILE_MAX_GROUPS; ++j)
                     {
-                        pLog->nGroupTicks[i] += nGroupTicks[i];
-                        pFrameGroup[i] += nGroupTicks[i];
+                        pLog->nGroupTicks[j] += nGroupTicks[j];
+                        pFrameGroup[j] += nGroupTicks[j];
                     }
                     pLog->nStackPos = nStackPos;
                 }
@@ -3309,7 +3334,7 @@ bool MicroProfileIsLocalThread(uint32_t nThreadId)
 #endif
 #else
 
-bool MicroProfileIsLocalThread(uint32_t nThreadId){return false;}
+bool MicroProfileIsLocalThread([[maybe_unused]] uint32_t nThreadId) { return false; }
 void MicroProfileStopContextSwitchTrace(){}
 void MicroProfileStartContextSwitchTrace(){}
 
@@ -3557,7 +3582,7 @@ int MicroProfileGetGpuTickReference(int64_t* pOutCpu, int64_t* pOutGpu)
 
 #undef S
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
 

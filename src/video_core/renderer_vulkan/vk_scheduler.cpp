@@ -9,12 +9,15 @@
 #include <utility>
 
 #include "common/microprofile.h"
-#include "video_core/renderer_vulkan/vk_device.h"
+#include "common/thread.h"
+#include "video_core/renderer_vulkan/vk_command_pool.h"
+#include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
-#include "video_core/renderer_vulkan/vk_resource_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/renderer_vulkan/vk_texture_cache.h"
+#include "video_core/vulkan_common/vulkan_device.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
 
@@ -34,10 +37,10 @@ void VKScheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf) {
     last = nullptr;
 }
 
-VKScheduler::VKScheduler(const VKDevice& device, VKResourceManager& resource_manager,
-                         StateTracker& state_tracker)
-    : device{device}, resource_manager{resource_manager}, state_tracker{state_tracker},
-      next_fence{&resource_manager.CommitFence()} {
+VKScheduler::VKScheduler(const Device& device_, StateTracker& state_tracker_)
+    : device{device_}, state_tracker{state_tracker_},
+      master_semaphore{std::make_unique<MasterSemaphore>(device)},
+      command_pool{std::make_unique<CommandPool>(*master_semaphore, device)} {
     AcquireNewChunk();
     AllocateNewContext();
     worker_thread = std::thread(&VKScheduler::WorkerThread, this);
@@ -49,20 +52,27 @@ VKScheduler::~VKScheduler() {
     worker_thread.join();
 }
 
-void VKScheduler::Flush(bool release_fence, VkSemaphore semaphore) {
+u64 VKScheduler::CurrentTick() const noexcept {
+    return master_semaphore->CurrentTick();
+}
+
+bool VKScheduler::IsFree(u64 tick) const noexcept {
+    return master_semaphore->IsFree(tick);
+}
+
+void VKScheduler::Wait(u64 tick) {
+    master_semaphore->Wait(tick);
+}
+
+void VKScheduler::Flush(VkSemaphore semaphore) {
     SubmitExecution(semaphore);
-    if (release_fence) {
-        current_fence->Release();
-    }
     AllocateNewContext();
 }
 
-void VKScheduler::Finish(bool release_fence, VkSemaphore semaphore) {
+void VKScheduler::Finish(VkSemaphore semaphore) {
+    const u64 presubmit_tick = CurrentTick();
     SubmitExecution(semaphore);
-    current_fence->Wait();
-    if (release_fence) {
-        current_fence->Release();
-    }
+    Wait(presubmit_tick);
     AllocateNewContext();
 }
 
@@ -87,35 +97,39 @@ void VKScheduler::DispatchWork() {
     AcquireNewChunk();
 }
 
-void VKScheduler::RequestRenderpass(VkRenderPass renderpass, VkFramebuffer framebuffer,
-                                    VkExtent2D render_area) {
-    if (renderpass == state.renderpass && framebuffer == state.framebuffer &&
+void VKScheduler::RequestRenderpass(const Framebuffer* framebuffer) {
+    const VkRenderPass renderpass = framebuffer->RenderPass();
+    const VkFramebuffer framebuffer_handle = framebuffer->Handle();
+    const VkExtent2D render_area = framebuffer->RenderArea();
+    if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
         return;
     }
-    const bool end_renderpass = state.renderpass != nullptr;
+    EndRenderPass();
     state.renderpass = renderpass;
-    state.framebuffer = framebuffer;
+    state.framebuffer = framebuffer_handle;
     state.render_area = render_area;
 
-    VkRenderPassBeginInfo renderpass_bi;
-    renderpass_bi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderpass_bi.pNext = nullptr;
-    renderpass_bi.renderPass = renderpass;
-    renderpass_bi.framebuffer = framebuffer;
-    renderpass_bi.renderArea.offset.x = 0;
-    renderpass_bi.renderArea.offset.y = 0;
-    renderpass_bi.renderArea.extent = render_area;
-    renderpass_bi.clearValueCount = 0;
-    renderpass_bi.pClearValues = nullptr;
-
-    Record([renderpass_bi, end_renderpass](vk::CommandBuffer cmdbuf) {
-        if (end_renderpass) {
-            cmdbuf.EndRenderPass();
-        }
+    Record([renderpass, framebuffer_handle, render_area](vk::CommandBuffer cmdbuf) {
+        const VkRenderPassBeginInfo renderpass_bi{
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .pNext = nullptr,
+            .renderPass = renderpass,
+            .framebuffer = framebuffer_handle,
+            .renderArea =
+                {
+                    .offset = {.x = 0, .y = 0},
+                    .extent = render_area,
+                },
+            .clearValueCount = 0,
+            .pClearValues = nullptr,
+        };
         cmdbuf.BeginRenderPass(renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
     });
+    num_renderpass_images = framebuffer->NumImages();
+    renderpass_images = framebuffer->Images();
+    renderpass_image_ranges = framebuffer->ImageRanges();
 }
 
 void VKScheduler::RequestOutsideRenderPassOperationContext() {
@@ -133,6 +147,7 @@ void VKScheduler::BindGraphicsPipeline(VkPipeline pipeline) {
 }
 
 void VKScheduler::WorkerThread() {
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
     std::unique_lock lock{mutex};
     do {
         cv.wait(lock, [this] { return !chunk_queue.Empty() || quit; });
@@ -155,17 +170,38 @@ void VKScheduler::SubmitExecution(VkSemaphore semaphore) {
 
     current_cmdbuf.End();
 
-    VkSubmitInfo submit_info;
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.pNext = nullptr;
-    submit_info.waitSemaphoreCount = 0;
-    submit_info.pWaitSemaphores = nullptr;
-    submit_info.pWaitDstStageMask = nullptr;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = current_cmdbuf.address();
-    submit_info.signalSemaphoreCount = semaphore ? 1 : 0;
-    submit_info.pSignalSemaphores = &semaphore;
-    switch (const VkResult result = device.GetGraphicsQueue().Submit(submit_info, *current_fence)) {
+    const VkSemaphore timeline_semaphore = master_semaphore->Handle();
+    const u32 num_signal_semaphores = semaphore ? 2U : 1U;
+
+    const u64 signal_value = master_semaphore->CurrentTick();
+    const u64 wait_value = signal_value - 1;
+    const VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+    master_semaphore->NextTick();
+
+    const std::array signal_values{signal_value, u64(0)};
+    const std::array signal_semaphores{timeline_semaphore, semaphore};
+
+    const VkTimelineSemaphoreSubmitInfoKHR timeline_si{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreValueCount = 1,
+        .pWaitSemaphoreValues = &wait_value,
+        .signalSemaphoreValueCount = num_signal_semaphores,
+        .pSignalSemaphoreValues = signal_values.data(),
+    };
+    const VkSubmitInfo submit_info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timeline_si,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &timeline_semaphore,
+        .pWaitDstStageMask = &wait_stage_mask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = current_cmdbuf.address(),
+        .signalSemaphoreCount = num_signal_semaphores,
+        .pSignalSemaphores = signal_semaphores.data(),
+    };
+    switch (const VkResult result = device.GetGraphicsQueue().Submit(submit_info)) {
     case VK_SUCCESS:
         break;
     case VK_ERROR_DEVICE_LOST:
@@ -177,21 +213,15 @@ void VKScheduler::SubmitExecution(VkSemaphore semaphore) {
 }
 
 void VKScheduler::AllocateNewContext() {
-    ++ticks;
-
-    VkCommandBufferBeginInfo cmdbuf_bi;
-    cmdbuf_bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    cmdbuf_bi.pNext = nullptr;
-    cmdbuf_bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    cmdbuf_bi.pInheritanceInfo = nullptr;
-
     std::unique_lock lock{mutex};
-    current_fence = next_fence;
-    next_fence = &resource_manager.CommitFence();
 
-    current_cmdbuf = vk::CommandBuffer(resource_manager.CommitCommandBuffer(*current_fence),
-                                       device.GetDispatchLoader());
-    current_cmdbuf.Begin(cmdbuf_bi);
+    current_cmdbuf = vk::CommandBuffer(command_pool->Commit(), device.GetDispatchLoader());
+    current_cmdbuf.Begin({
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    });
 
     // Enable counters once again. These are disabled when a command buffer is finished.
     if (query_cache) {
@@ -213,8 +243,37 @@ void VKScheduler::EndRenderPass() {
     if (!state.renderpass) {
         return;
     }
+    Record([num_images = num_renderpass_images, images = renderpass_images,
+            ranges = renderpass_image_ranges](vk::CommandBuffer cmdbuf) {
+        std::array<VkImageMemoryBarrier, 9> barriers;
+        for (size_t i = 0; i < num_images; ++i) {
+            barriers[i] = VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = images[i],
+                .subresourceRange = ranges[i],
+            };
+        }
+        cmdbuf.EndRenderPass();
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0, nullptr, nullptr,
+                               vk::Span(barriers.data(), num_images));
+    });
     state.renderpass = nullptr;
-    Record([](vk::CommandBuffer cmdbuf) { cmdbuf.EndRenderPass(); });
+    num_renderpass_images = 0;
 }
 
 void VKScheduler::AcquireNewChunk() {

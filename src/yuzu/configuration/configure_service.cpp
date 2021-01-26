@@ -9,6 +9,7 @@
 #include "ui_configure_service.h"
 #include "yuzu/configuration/configure_service.h"
 
+#ifdef YUZU_ENABLE_BOXCAT
 namespace {
 QString FormatEventStatusString(const Service::BCAT::EventStatus& status) {
     QString out;
@@ -32,6 +33,7 @@ QString FormatEventStatusString(const Service::BCAT::EventStatus& status) {
     return out;
 }
 } // Anonymous namespace
+#endif
 
 ConfigureService::ConfigureService(QWidget* parent)
     : QWidget(parent), ui(std::make_unique<Ui::ConfigureService>()) {
@@ -68,6 +70,7 @@ void ConfigureService::SetConfiguration() {
 }
 
 std::pair<QString, QString> ConfigureService::BCATDownloadEvents() {
+#ifdef YUZU_ENABLE_BOXCAT
     std::optional<std::string> global;
     std::map<std::string, Service::BCAT::EventStatus> map;
     const auto res = Service::BCAT::Boxcat::GetStatus(global, map);
@@ -105,7 +108,10 @@ std::pair<QString, QString> ConfigureService::BCATDownloadEvents() {
                    .arg(QString::fromStdString(key))
                    .arg(FormatEventStatusString(value));
     }
-    return {QStringLiteral("Current Boxcat Events"), std::move(out)};
+    return {tr("Current Boxcat Events"), std::move(out)};
+#else
+    return {tr("Current Boxcat Events"), tr("There are currently no events on boxcat.")};
+#endif
 }
 
 void ConfigureService::OnBCATImplChanged() {

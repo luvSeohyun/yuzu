@@ -9,7 +9,7 @@
 
 #include <dynarmic/A32/a32.h>
 #include <dynarmic/A64/a64.h>
-#include <dynarmic/A64/exclusive_monitor.h>
+#include <dynarmic/exclusive_monitor.h>
 #include "common/common_types.h"
 #include "common/hash.h"
 #include "core/arm/arm_interface.h"
@@ -21,13 +21,16 @@ class Memory;
 
 namespace Core {
 
+class CPUInterruptHandler;
 class DynarmicCallbacks32;
+class DynarmicCP15;
 class DynarmicExclusiveMonitor;
 class System;
 
 class ARM_Dynarmic_32 final : public ARM_Interface {
 public:
-    ARM_Dynarmic_32(System& system, ExclusiveMonitor& exclusive_monitor, std::size_t core_index);
+    ARM_Dynarmic_32(System& system, CPUInterrupts& interrupt_handlers, bool uses_wall_clock,
+                    ExclusiveMonitor& exclusive_monitor, std::size_t core_index);
     ~ARM_Dynarmic_32() override;
 
     void SetPC(u64 pc) override;
@@ -39,11 +42,13 @@ public:
     u32 GetPSTATE() const override;
     void SetPSTATE(u32 pstate) override;
     void Run() override;
+    void ExceptionalExit() override;
     void Step() override;
     VAddr GetTlsAddress() const override;
     void SetTlsAddress(VAddr address) override;
     void SetTPIDR_EL0(u64 value) override;
     u64 GetTPIDR_EL0() const override;
+    void ChangeProcessorID(std::size_t new_core_id) override;
 
     void SaveContext(ThreadContext32& ctx) override;
     void SaveContext(ThreadContext64& ctx) override {}
@@ -54,6 +59,7 @@ public:
     void ClearExclusiveState() override;
 
     void ClearInstructionCache() override;
+    void InvalidateCacheRange(VAddr addr, std::size_t size) override;
     void PageTableChanged(Common::PageTable& new_page_table,
                           std::size_t new_address_space_size_in_bits) override;
 
@@ -66,12 +72,14 @@ private:
         std::unordered_map<JitCacheKey, std::shared_ptr<Dynarmic::A32::Jit>, Common::PairHash>;
 
     friend class DynarmicCallbacks32;
+    friend class DynarmicCP15;
+
     std::unique_ptr<DynarmicCallbacks32> cb;
     JitCacheType jit_cache;
     std::shared_ptr<Dynarmic::A32::Jit> jit;
+    std::shared_ptr<DynarmicCP15> cp15;
     std::size_t core_index;
     DynarmicExclusiveMonitor& exclusive_monitor;
-    std::array<u32, 84> CP15_regs{};
 };
 
 } // namespace Core

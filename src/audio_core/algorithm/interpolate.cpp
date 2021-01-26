@@ -146,7 +146,7 @@ std::vector<s16> Interpolate(InterpolationState& state, std::vector<s16> input, 
         return {};
 
     if (ratio <= 0) {
-        LOG_CRITICAL(Audio, "Nonsensical interpolation ratio {}", ratio);
+        LOG_ERROR(Audio, "Nonsensical interpolation ratio {}", ratio);
         return input;
     }
 
@@ -164,7 +164,8 @@ std::vector<s16> Interpolate(InterpolationState& state, std::vector<s16> input, 
     const std::size_t num_frames{input.size() / 2};
 
     std::vector<s16> output;
-    output.reserve(static_cast<std::size_t>(input.size() / ratio + InterpolationState::taps));
+    output.reserve(static_cast<std::size_t>(static_cast<double>(input.size()) / ratio +
+                                            InterpolationState::taps));
 
     for (std::size_t frame{}; frame < num_frames; ++frame) {
         const std::size_t lut_index{(state.fraction >> 8) * InterpolationState::taps};
@@ -195,6 +196,38 @@ std::vector<s16> Interpolate(InterpolationState& state, std::vector<s16> input, 
     }
 
     return output;
+}
+
+void Resample(s32* output, const s32* input, s32 pitch, s32& fraction, std::size_t sample_count) {
+    const std::array<s16, 512>& lut = [pitch] {
+        if (pitch > 0xaaaa) {
+            return curve_lut0;
+        }
+        if (pitch <= 0x8000) {
+            return curve_lut1;
+        }
+        return curve_lut2;
+    }();
+
+    std::size_t index{};
+
+    for (std::size_t i = 0; i < sample_count; i++) {
+        const std::size_t lut_index{(static_cast<std::size_t>(fraction) >> 8) * 4};
+        const auto l0 = lut[lut_index + 0];
+        const auto l1 = lut[lut_index + 1];
+        const auto l2 = lut[lut_index + 2];
+        const auto l3 = lut[lut_index + 3];
+
+        const auto s0 = static_cast<s32>(input[index + 0]);
+        const auto s1 = static_cast<s32>(input[index + 1]);
+        const auto s2 = static_cast<s32>(input[index + 2]);
+        const auto s3 = static_cast<s32>(input[index + 3]);
+
+        output[i] = (l0 * s0 + l1 * s1 + l2 * s2 + l3 * s3) >> 15;
+        fraction += pitch;
+        index += (fraction >> 15);
+        fraction &= 0x7fff;
+    }
 }
 
 } // namespace AudioCore

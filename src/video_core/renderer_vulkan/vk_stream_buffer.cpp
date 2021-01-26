@@ -10,15 +10,18 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
-#include "video_core/renderer_vulkan/vk_device.h"
-#include "video_core/renderer_vulkan/vk_resource_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_stream_buffer.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/vulkan_common/vulkan_device.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
 
 namespace {
+
+constexpr VkBufferUsageFlags BUFFER_USAGE =
+    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
 constexpr u64 WATCHES_INITIAL_RESERVE = 0x4000;
 constexpr u64 WATCHES_RESERVE_CHUNK = 0x1000;
@@ -57,17 +60,16 @@ u32 GetMemoryType(const VkPhysicalDeviceMemoryProperties& properties,
 
 } // Anonymous namespace
 
-VKStreamBuffer::VKStreamBuffer(const VKDevice& device, VKScheduler& scheduler,
-                               VkBufferUsageFlags usage)
-    : device{device}, scheduler{scheduler} {
-    CreateBuffers(usage);
+VKStreamBuffer::VKStreamBuffer(const Device& device_, VKScheduler& scheduler_)
+    : device{device_}, scheduler{scheduler_} {
+    CreateBuffers();
     ReserveWatches(current_watches, WATCHES_INITIAL_RESERVE);
     ReserveWatches(previous_watches, WATCHES_INITIAL_RESERVE);
 }
 
 VKStreamBuffer::~VKStreamBuffer() = default;
 
-std::tuple<u8*, u64, bool> VKStreamBuffer::Map(u64 size, u64 alignment) {
+std::pair<u8*, u64> VKStreamBuffer::Map(u64 size, u64 alignment) {
     ASSERT(size <= stream_buffer_size);
     mapped_size = size;
 
@@ -77,7 +79,6 @@ std::tuple<u8*, u64, bool> VKStreamBuffer::Map(u64 size, u64 alignment) {
 
     WaitPendingOperations(offset);
 
-    bool invalidated = false;
     if (offset + size > stream_buffer_size) {
         // The buffer would overflow, save the amount of used watches and reset the state.
         invalidation_mark = current_watch_cursor;
@@ -91,11 +92,9 @@ std::tuple<u8*, u64, bool> VKStreamBuffer::Map(u64 size, u64 alignment) {
 
         // Ensure that we don't wait for uncommitted fences.
         scheduler.Flush();
-
-        invalidated = true;
     }
 
-    return {memory.Map(offset, size), offset, invalidated};
+    return std::make_pair(memory.Map(offset, size), offset);
 }
 
 void VKStreamBuffer::Unmap(u64 size) {
@@ -111,41 +110,39 @@ void VKStreamBuffer::Unmap(u64 size) {
     }
     auto& watch = current_watches[current_watch_cursor++];
     watch.upper_bound = offset;
-    watch.fence.Watch(scheduler.GetFence());
+    watch.tick = scheduler.CurrentTick();
 }
 
-void VKStreamBuffer::CreateBuffers(VkBufferUsageFlags usage) {
+void VKStreamBuffer::CreateBuffers() {
     const auto memory_properties = device.GetPhysical().GetMemoryProperties();
     const u32 preferred_type = GetMemoryType(memory_properties);
     const u32 preferred_heap = memory_properties.memoryTypes[preferred_type].heapIndex;
 
     // Substract from the preferred heap size some bytes to avoid getting out of memory.
     const VkDeviceSize heap_size = memory_properties.memoryHeaps[preferred_heap].size;
-    const VkDeviceSize allocable_size = heap_size - 4 * 1024 * 1024;
-
-    VkBufferCreateInfo buffer_ci;
-    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_ci.pNext = nullptr;
-    buffer_ci.flags = 0;
-    buffer_ci.size = std::min(PREFERRED_STREAM_BUFFER_SIZE, allocable_size);
-    buffer_ci.usage = usage;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    buffer_ci.queueFamilyIndexCount = 0;
-    buffer_ci.pQueueFamilyIndices = nullptr;
-
-    buffer = device.GetLogical().CreateBuffer(buffer_ci);
+    // As per DXVK's example, using `heap_size / 2`
+    const VkDeviceSize allocable_size = heap_size / 2;
+    buffer = device.GetLogical().CreateBuffer({
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = std::min(PREFERRED_STREAM_BUFFER_SIZE, allocable_size),
+        .usage = BUFFER_USAGE,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    });
 
     const auto requirements = device.GetLogical().GetBufferMemoryRequirements(*buffer);
     const u32 required_flags = requirements.memoryTypeBits;
     stream_buffer_size = static_cast<u64>(requirements.size);
 
-    VkMemoryAllocateInfo memory_ai;
-    memory_ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    memory_ai.pNext = nullptr;
-    memory_ai.allocationSize = requirements.size;
-    memory_ai.memoryTypeIndex = GetMemoryType(memory_properties, required_flags);
-
-    memory = device.GetLogical().AllocateMemory(memory_ai);
+    memory = device.GetLogical().AllocateMemory({
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = GetMemoryType(memory_properties, required_flags),
+    });
     buffer.BindMemory(*memory, 0);
 }
 
@@ -160,7 +157,7 @@ void VKStreamBuffer::WaitPendingOperations(u64 requested_upper_bound) {
     while (requested_upper_bound < wait_bound && wait_cursor < *invalidation_mark) {
         auto& watch = previous_watches[wait_cursor];
         wait_bound = watch.upper_bound;
-        watch.fence.Wait();
+        scheduler.Wait(watch.tick);
         ++wait_cursor;
     }
 }

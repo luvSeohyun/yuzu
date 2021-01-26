@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -72,13 +73,18 @@ public:
     std::vector<Entry> GetEntries() const;
 
 private:
-    void FrameCallback(u64 userdata, s64 cycles_late);
+    using Entries = std::vector<Entry>;
+
+    Entries::iterator FindEntry(VAddr address);
+    Entries::const_iterator FindEntry(VAddr address) const;
+
+    void FrameCallback(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
     void FillEntryReads();
 
     std::atomic_bool active{false};
 
     mutable std::mutex entries_mutex;
-    std::vector<Entry> entries;
+    Entries entries;
 
     std::shared_ptr<Core::Timing::EventType> event;
     Core::Timing::CoreTiming& core_timing;

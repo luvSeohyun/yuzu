@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "common/uuid.h"
 #include "core/hle/service/glue/manager.h"
 #include "core/hle/service/service.h"
 
@@ -15,8 +16,8 @@ class Module final {
 public:
     class Interface : public ServiceFramework<Interface> {
     public:
-        explicit Interface(std::shared_ptr<Module> module,
-                           std::shared_ptr<ProfileManager> profile_manager, Core::System& system,
+        explicit Interface(std::shared_ptr<Module> module_,
+                           std::shared_ptr<ProfileManager> profile_manager_, Core::System& system_,
                            const char* name);
         ~Interface() override;
 
@@ -34,9 +35,15 @@ public:
         void IsUserAccountSwitchLocked(Kernel::HLERequestContext& ctx);
         void GetProfileEditor(Kernel::HLERequestContext& ctx);
         void ListQualifiedUsers(Kernel::HLERequestContext& ctx);
+        void LoadOpenContext(Kernel::HLERequestContext& ctx);
+        void ListOpenContextStoredUsers(Kernel::HLERequestContext& ctx);
+        void StoreSaveDataThumbnailApplication(Kernel::HLERequestContext& ctx);
+        void StoreSaveDataThumbnailSystem(Kernel::HLERequestContext& ctx);
 
     private:
         ResultCode InitializeApplicationInfoBase();
+        void StoreSaveDataThumbnail(Kernel::HLERequestContext& ctx, const Common::UUID& uuid,
+                                    const u64 tid);
 
         enum class ApplicationType : u32_le {
             GameCard = 0,
@@ -58,7 +65,6 @@ public:
     protected:
         std::shared_ptr<Module> module;
         std::shared_ptr<ProfileManager> profile_manager;
-        Core::System& system;
     };
 };
 

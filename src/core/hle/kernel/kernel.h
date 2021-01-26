@@ -4,15 +4,18 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "core/arm/cpu_interrupt_handler.h"
+#include "core/hardware_properties.h"
 #include "core/hle/kernel/memory/memory_types.h"
 #include "core/hle/kernel/object.h"
 
 namespace Core {
-struct EmuThreadHandle;
+class CPUInterruptHandler;
 class ExclusiveMonitor;
 class System;
 } // namespace Core
@@ -30,15 +33,15 @@ template <typename T>
 class SlabHeap;
 } // namespace Memory
 
-class AddressArbiter;
 class ClientPort;
-class GlobalScheduler;
+class GlobalSchedulerContext;
 class HandleTable;
 class PhysicalCore;
 class Process;
 class ResourceLimit;
-class Scheduler;
+class KScheduler;
 class SharedMemory;
+class ServiceThread;
 class Synchronization;
 class Thread;
 class TimeManager;
@@ -65,8 +68,14 @@ public:
     KernelCore(KernelCore&&) = delete;
     KernelCore& operator=(KernelCore&&) = delete;
 
+    /// Sets if emulation is multicore or single core, must be set before Initialize
+    void SetMulticore(bool is_multicore);
+
     /// Resets the kernel to a clean slate for use.
     void Initialize();
+
+    /// Initializes the CPU cores.
+    void InitializeCores();
 
     /// Clears all resources in use by the kernel instance.
     void Shutdown();
@@ -93,16 +102,16 @@ public:
     const std::vector<std::shared_ptr<Process>>& GetProcessList() const;
 
     /// Gets the sole instance of the global scheduler
-    Kernel::GlobalScheduler& GlobalScheduler();
+    Kernel::GlobalSchedulerContext& GlobalSchedulerContext();
 
     /// Gets the sole instance of the global scheduler
-    const Kernel::GlobalScheduler& GlobalScheduler() const;
+    const Kernel::GlobalSchedulerContext& GlobalSchedulerContext() const;
 
     /// Gets the sole instance of the Scheduler assoviated with cpu core 'id'
-    Kernel::Scheduler& Scheduler(std::size_t id);
+    Kernel::KScheduler& Scheduler(std::size_t id);
 
     /// Gets the sole instance of the Scheduler assoviated with cpu core 'id'
-    const Kernel::Scheduler& Scheduler(std::size_t id) const;
+    const Kernel::KScheduler& Scheduler(std::size_t id) const;
 
     /// Gets the an instance of the respective physical CPU core.
     Kernel::PhysicalCore& PhysicalCore(std::size_t id);
@@ -110,11 +119,14 @@ public:
     /// Gets the an instance of the respective physical CPU core.
     const Kernel::PhysicalCore& PhysicalCore(std::size_t id) const;
 
-    /// Gets the an instance of the Synchronization Interface.
-    Kernel::Synchronization& Synchronization();
+    /// Gets the sole instance of the Scheduler at the current running core.
+    Kernel::KScheduler* CurrentScheduler();
 
-    /// Gets the an instance of the Synchronization Interface.
-    const Kernel::Synchronization& Synchronization() const;
+    /// Gets the an instance of the current physical CPU core.
+    Kernel::PhysicalCore& CurrentPhysicalCore();
+
+    /// Gets the an instance of the current physical CPU core.
+    const Kernel::PhysicalCore& CurrentPhysicalCore() const;
 
     /// Gets the an instance of the TimeManager Interface.
     Kernel::TimeManager& TimeManager();
@@ -129,7 +141,13 @@ public:
 
     const Core::ExclusiveMonitor& GetExclusiveMonitor() const;
 
+    std::array<Core::CPUInterruptHandler, Core::Hardware::NUM_CPU_CORES>& Interrupts();
+
+    const std::array<Core::CPUInterruptHandler, Core::Hardware::NUM_CPU_CORES>& Interrupts() const;
+
     void InvalidateAllInstructionCaches();
+
+    void InvalidateCpuInstructionCacheRange(VAddr addr, std::size_t size);
 
     /// Adds a port to the named port table
     void AddNamedPort(std::string name, std::shared_ptr<ClientPort> port);
@@ -191,6 +209,34 @@ public:
     /// Gets the shared memory object for Time services.
     const Kernel::SharedMemory& GetTimeSharedMem() const;
 
+    /// Suspend/unsuspend the OS.
+    void Suspend(bool in_suspention);
+
+    /// Exceptional exit the OS.
+    void ExceptionalExit();
+
+    bool IsMulticore() const;
+
+    void EnterSVCProfile();
+
+    void ExitSVCProfile();
+
+    /**
+     * Creates an HLE service thread, which are used to execute service routines asynchronously.
+     * While these are allocated per ServerSession, these need to be owned and managed outside of
+     * ServerSession to avoid a circular dependency.
+     * @param name String name for the ServerSession creating this thread, used for debug purposes.
+     * @returns The a weak pointer newly created service thread.
+     */
+    std::weak_ptr<Kernel::ServiceThread> CreateServiceThread(const std::string& name);
+
+    /**
+     * Releases a HLE service thread, instructing KernelCore to free it. This should be called when
+     * the ServerSession associated with the thread is destroyed.
+     * @param service_thread Service thread to release.
+     */
+    void ReleaseServiceThread(std::weak_ptr<Kernel::ServiceThread> service_thread);
+
 private:
     friend class Object;
     friend class Process;
@@ -208,9 +254,6 @@ private:
     /// Creates a new thread ID, incrementing the internal thread ID counter.
     u64 CreateNewThreadID();
 
-    /// Retrieves the event type used for thread wakeup callbacks.
-    const std::shared_ptr<Core::Timing::EventType>& ThreadWakeupCallbackEventType() const;
-
     /// Provides a reference to the global handle table.
     Kernel::HandleTable& GlobalHandleTable();
 
@@ -219,6 +262,7 @@ private:
 
     struct Impl;
     std::unique_ptr<Impl> impl;
+    bool exception_exited{};
 };
 
 } // namespace Kernel

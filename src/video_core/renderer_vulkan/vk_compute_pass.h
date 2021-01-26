@@ -5,33 +5,31 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <utility>
 
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
 
-class VKDevice;
-class VKFence;
+class Device;
+class StagingBufferPool;
 class VKScheduler;
-class VKStagingBufferPool;
 class VKUpdateDescriptorQueue;
 
 class VKComputePass {
 public:
-    explicit VKComputePass(const VKDevice& device, VKDescriptorPool& descriptor_pool,
+    explicit VKComputePass(const Device& device, VKDescriptorPool& descriptor_pool,
                            vk::Span<VkDescriptorSetLayoutBinding> bindings,
                            vk::Span<VkDescriptorUpdateTemplateEntryKHR> templates,
-                           vk::Span<VkPushConstantRange> push_constants, std::size_t code_size,
-                           const u8* code);
+                           vk::Span<VkPushConstantRange> push_constants, std::span<const u32> code);
     ~VKComputePass();
 
 protected:
-    VkDescriptorSet CommitDescriptorSet(VKUpdateDescriptorQueue& update_descriptor_queue,
-                                        VKFence& fence);
+    VkDescriptorSet CommitDescriptorSet(VKUpdateDescriptorQueue& update_descriptor_queue);
 
     vk::DescriptorUpdateTemplateKHR descriptor_template;
     vk::PipelineLayout layout;
@@ -45,41 +43,41 @@ private:
 
 class QuadArrayPass final : public VKComputePass {
 public:
-    explicit QuadArrayPass(const VKDevice& device, VKScheduler& scheduler,
-                           VKDescriptorPool& descriptor_pool,
-                           VKStagingBufferPool& staging_buffer_pool,
-                           VKUpdateDescriptorQueue& update_descriptor_queue);
+    explicit QuadArrayPass(const Device& device_, VKScheduler& scheduler_,
+                           VKDescriptorPool& descriptor_pool_,
+                           StagingBufferPool& staging_buffer_pool_,
+                           VKUpdateDescriptorQueue& update_descriptor_queue_);
     ~QuadArrayPass();
 
     std::pair<VkBuffer, VkDeviceSize> Assemble(u32 num_vertices, u32 first);
 
 private:
     VKScheduler& scheduler;
-    VKStagingBufferPool& staging_buffer_pool;
+    StagingBufferPool& staging_buffer_pool;
     VKUpdateDescriptorQueue& update_descriptor_queue;
 };
 
 class Uint8Pass final : public VKComputePass {
 public:
-    explicit Uint8Pass(const VKDevice& device, VKScheduler& scheduler,
-                       VKDescriptorPool& descriptor_pool, VKStagingBufferPool& staging_buffer_pool,
-                       VKUpdateDescriptorQueue& update_descriptor_queue);
+    explicit Uint8Pass(const Device& device_, VKScheduler& scheduler_,
+                       VKDescriptorPool& descriptor_pool_, StagingBufferPool& staging_buffer_pool_,
+                       VKUpdateDescriptorQueue& update_descriptor_queue_);
     ~Uint8Pass();
 
     std::pair<VkBuffer, u64> Assemble(u32 num_vertices, VkBuffer src_buffer, u64 src_offset);
 
 private:
     VKScheduler& scheduler;
-    VKStagingBufferPool& staging_buffer_pool;
+    StagingBufferPool& staging_buffer_pool;
     VKUpdateDescriptorQueue& update_descriptor_queue;
 };
 
 class QuadIndexedPass final : public VKComputePass {
 public:
-    explicit QuadIndexedPass(const VKDevice& device, VKScheduler& scheduler,
-                             VKDescriptorPool& descriptor_pool,
-                             VKStagingBufferPool& staging_buffer_pool,
-                             VKUpdateDescriptorQueue& update_descriptor_queue);
+    explicit QuadIndexedPass(const Device& device_, VKScheduler& scheduler_,
+                             VKDescriptorPool& descriptor_pool_,
+                             StagingBufferPool& staging_buffer_pool_,
+                             VKUpdateDescriptorQueue& update_descriptor_queue_);
     ~QuadIndexedPass();
 
     std::pair<VkBuffer, u64> Assemble(Tegra::Engines::Maxwell3D::Regs::IndexFormat index_format,
@@ -88,7 +86,7 @@ public:
 
 private:
     VKScheduler& scheduler;
-    VKStagingBufferPool& staging_buffer_pool;
+    StagingBufferPool& staging_buffer_pool;
     VKUpdateDescriptorQueue& update_descriptor_queue;
 };
 

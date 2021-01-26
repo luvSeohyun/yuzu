@@ -11,6 +11,7 @@
 #include "common/string_util.h"
 #include "common/swap.h"
 #include "core/constants.h"
+#include "core/core.h"
 #include "core/core_timing.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
@@ -31,11 +32,17 @@
 
 namespace Service::Account {
 
-constexpr ResultCode ERR_INVALID_BUFFER_SIZE{ErrorModule::Account, 30};
+constexpr ResultCode ERR_INVALID_USER_ID{ErrorModule::Account, 20};
+constexpr ResultCode ERR_INVALID_APPLICATION_ID{ErrorModule::Account, 22};
+constexpr ResultCode ERR_INVALID_BUFFER{ErrorModule::Account, 30};
+constexpr ResultCode ERR_INVALID_BUFFER_SIZE{ErrorModule::Account, 31};
 constexpr ResultCode ERR_FAILED_SAVE_DATA{ErrorModule::Account, 100};
 
+// Thumbnails are hard coded to be at least this size
+constexpr std::size_t THUMBNAIL_SIZE = 0x24000;
+
 static std::string GetImagePath(Common::UUID uuid) {
-    return FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
+    return Common::FS::GetUserPath(Common::FS::UserPath::NANDDir) +
            "/system/save/8000000000000010/su/avators/" + uuid.FormatSwitch() + ".jpg";
 }
 
@@ -44,11 +51,226 @@ static constexpr u32 SanitizeJPEGSize(std::size_t size) {
     return static_cast<u32>(std::min(size, max_jpeg_image_size));
 }
 
+class IManagerForSystemService final : public ServiceFramework<IManagerForSystemService> {
+public:
+    explicit IManagerForSystemService(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IManagerForSystemService"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "CheckAvailability"},
+            {1, nullptr, "GetAccountId"},
+            {2, nullptr, "EnsureIdTokenCacheAsync"},
+            {3, nullptr, "LoadIdTokenCache"},
+            {100, nullptr, "SetSystemProgramIdentification"},
+            {101, nullptr, "RefreshNotificationTokenAsync"}, // 7.0.0+
+            {110, nullptr, "GetServiceEntryRequirementCache"}, // 4.0.0+
+            {111, nullptr, "InvalidateServiceEntryRequirementCache"}, // 4.0.0+
+            {112, nullptr, "InvalidateTokenCache"}, // 4.0.0 - 6.2.0
+            {113, nullptr, "GetServiceEntryRequirementCacheForOnlinePlay"}, // 6.1.0+
+            {120, nullptr, "GetNintendoAccountId"},
+            {121, nullptr, "CalculateNintendoAccountAuthenticationFingerprint"}, // 9.0.0+
+            {130, nullptr, "GetNintendoAccountUserResourceCache"},
+            {131, nullptr, "RefreshNintendoAccountUserResourceCacheAsync"},
+            {132, nullptr, "RefreshNintendoAccountUserResourceCacheAsyncIfSecondsElapsed"},
+            {133, nullptr, "GetNintendoAccountVerificationUrlCache"}, // 9.0.0+
+            {134, nullptr, "RefreshNintendoAccountVerificationUrlCache"}, // 9.0.0+
+            {135, nullptr, "RefreshNintendoAccountVerificationUrlCacheAsyncIfSecondsElapsed"}, // 9.0.0+
+            {140, nullptr, "GetNetworkServiceLicenseCache"}, // 5.0.0+
+            {141, nullptr, "RefreshNetworkServiceLicenseCacheAsync"}, // 5.0.0+
+            {142, nullptr, "RefreshNetworkServiceLicenseCacheAsyncIfSecondsElapsed"}, // 5.0.0+
+            {150, nullptr, "CreateAuthorizationRequest"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+// 3.0.0+
+class IFloatingRegistrationRequest final : public ServiceFramework<IFloatingRegistrationRequest> {
+public:
+    explicit IFloatingRegistrationRequest(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IFloatingRegistrationRequest"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSessionId"},
+            {12, nullptr, "GetAccountId"},
+            {13, nullptr, "GetLinkedNintendoAccountId"},
+            {14, nullptr, "GetNickname"},
+            {15, nullptr, "GetProfileImage"},
+            {21, nullptr, "LoadIdTokenCache"},
+            {100, nullptr, "RegisterUser"}, // [1.0.0-3.0.2] RegisterAsync
+            {101, nullptr, "RegisterUserWithUid"}, // [1.0.0-3.0.2] RegisterWithUidAsync
+            {102, nullptr, "RegisterNetworkServiceAccountAsync"}, // 4.0.0+
+            {103, nullptr, "RegisterNetworkServiceAccountWithUidAsync"}, // 4.0.0+
+            {110, nullptr, "SetSystemProgramIdentification"},
+            {111, nullptr, "EnsureIdTokenCacheAsync"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IAdministrator final : public ServiceFramework<IAdministrator> {
+public:
+    explicit IAdministrator(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IAdministrator"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "CheckAvailability"},
+            {1, nullptr, "GetAccountId"},
+            {2, nullptr, "EnsureIdTokenCacheAsync"},
+            {3, nullptr, "LoadIdTokenCache"},
+            {100, nullptr, "SetSystemProgramIdentification"},
+            {101, nullptr, "RefreshNotificationTokenAsync"}, // 7.0.0+
+            {110, nullptr, "GetServiceEntryRequirementCache"}, // 4.0.0+
+            {111, nullptr, "InvalidateServiceEntryRequirementCache"}, // 4.0.0+
+            {112, nullptr, "InvalidateTokenCache"}, // 4.0.0 - 6.2.0
+            {113, nullptr, "GetServiceEntryRequirementCacheForOnlinePlay"}, // 6.1.0+
+            {120, nullptr, "GetNintendoAccountId"},
+            {121, nullptr, "CalculateNintendoAccountAuthenticationFingerprint"}, // 9.0.0+
+            {130, nullptr, "GetNintendoAccountUserResourceCache"},
+            {131, nullptr, "RefreshNintendoAccountUserResourceCacheAsync"},
+            {132, nullptr, "RefreshNintendoAccountUserResourceCacheAsyncIfSecondsElapsed"},
+            {133, nullptr, "GetNintendoAccountVerificationUrlCache"}, // 9.0.0+
+            {134, nullptr, "RefreshNintendoAccountVerificationUrlCacheAsync"}, // 9.0.0+
+            {135, nullptr, "RefreshNintendoAccountVerificationUrlCacheAsyncIfSecondsElapsed"}, // 9.0.0+
+            {140, nullptr, "GetNetworkServiceLicenseCache"}, // 5.0.0+
+            {141, nullptr, "RefreshNetworkServiceLicenseCacheAsync"}, // 5.0.0+
+            {142, nullptr, "RefreshNetworkServiceLicenseCacheAsyncIfSecondsElapsed"}, // 5.0.0+
+            {150, nullptr, "CreateAuthorizationRequest"},
+            {200, nullptr, "IsRegistered"},
+            {201, nullptr, "RegisterAsync"},
+            {202, nullptr, "UnregisterAsync"},
+            {203, nullptr, "DeleteRegistrationInfoLocally"},
+            {220, nullptr, "SynchronizeProfileAsync"},
+            {221, nullptr, "UploadProfileAsync"},
+            {222, nullptr, "SynchronizaProfileAsyncIfSecondsElapsed"},
+            {250, nullptr, "IsLinkedWithNintendoAccount"},
+            {251, nullptr, "CreateProcedureToLinkWithNintendoAccount"},
+            {252, nullptr, "ResumeProcedureToLinkWithNintendoAccount"},
+            {255, nullptr, "CreateProcedureToUpdateLinkageStateOfNintendoAccount"},
+            {256, nullptr, "ResumeProcedureToUpdateLinkageStateOfNintendoAccount"},
+            {260, nullptr, "CreateProcedureToLinkNnidWithNintendoAccount"}, // 3.0.0+
+            {261, nullptr, "ResumeProcedureToLinkNnidWithNintendoAccount"}, // 3.0.0+
+            {280, nullptr, "ProxyProcedureToAcquireApplicationAuthorizationForNintendoAccount"},
+            {290, nullptr, "GetRequestForNintendoAccountUserResourceView"}, // 8.0.0+
+            {300, nullptr, "TryRecoverNintendoAccountUserStateAsync"}, // 6.0.0+
+            {400, nullptr, "IsServiceEntryRequirementCacheRefreshRequiredForOnlinePlay"}, // 6.1.0+
+            {401, nullptr, "RefreshServiceEntryRequirementCacheForOnlinePlayAsync"}, // 6.1.0+
+            {900, nullptr, "GetAuthenticationInfoForWin"}, // 9.0.0+
+            {901, nullptr, "ImportAsyncForWin"}, // 9.0.0+
+            {997, nullptr, "DebugUnlinkNintendoAccountAsync"},
+            {998, nullptr, "DebugSetAvailabilityErrorDetail"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IAuthorizationRequest final : public ServiceFramework<IAuthorizationRequest> {
+public:
+    explicit IAuthorizationRequest(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IAuthorizationRequest"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSessionId"},
+            {10, nullptr, "InvokeWithoutInteractionAsync"},
+            {19, nullptr, "IsAuthorized"},
+            {20, nullptr, "GetAuthorizationCode"},
+            {21, nullptr, "GetIdToken"},
+            {22, nullptr, "GetState"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IOAuthProcedure final : public ServiceFramework<IOAuthProcedure> {
+public:
+    explicit IOAuthProcedure(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IOAuthProcedure"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "PrepareAsync"},
+            {1, nullptr, "GetRequest"},
+            {2, nullptr, "ApplyResponse"},
+            {3, nullptr, "ApplyResponseAsync"},
+            {10, nullptr, "Suspend"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+// 3.0.0+
+class IOAuthProcedureForExternalNsa final : public ServiceFramework<IOAuthProcedureForExternalNsa> {
+public:
+    explicit IOAuthProcedureForExternalNsa(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IOAuthProcedureForExternalNsa"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "PrepareAsync"},
+            {1, nullptr, "GetRequest"},
+            {2, nullptr, "ApplyResponse"},
+            {3, nullptr, "ApplyResponseAsync"},
+            {10, nullptr, "Suspend"},
+            {100, nullptr, "GetAccountId"},
+            {101, nullptr, "GetLinkedNintendoAccountId"},
+            {102, nullptr, "GetNickname"},
+            {103, nullptr, "GetProfileImage"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IOAuthProcedureForNintendoAccountLinkage final
+    : public ServiceFramework<IOAuthProcedureForNintendoAccountLinkage> {
+public:
+    explicit IOAuthProcedureForNintendoAccountLinkage(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IOAuthProcedureForNintendoAccountLinkage"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "PrepareAsync"},
+            {1, nullptr, "GetRequest"},
+            {2, nullptr, "ApplyResponse"},
+            {3, nullptr, "ApplyResponseAsync"},
+            {10, nullptr, "Suspend"},
+            {100, nullptr, "GetRequestWithTheme"},
+            {101, nullptr, "IsNetworkServiceAccountReplaced"},
+            {199, nullptr, "GetUrlForIntroductionOfExtraMembership"}, // 2.0.0 - 5.1.0
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class INotifier final : public ServiceFramework<INotifier> {
+public:
+    explicit INotifier(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "INotifier"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSystemEvent"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
 class IProfileCommon : public ServiceFramework<IProfileCommon> {
 public:
-    explicit IProfileCommon(const char* name, bool editor_commands, Common::UUID user_id,
-                            ProfileManager& profile_manager)
-        : ServiceFramework(name), profile_manager(profile_manager), user_id(user_id) {
+    explicit IProfileCommon(Core::System& system_, const char* name, bool editor_commands,
+                            Common::UUID user_id_, ProfileManager& profile_manager_)
+        : ServiceFramework{system_, name}, profile_manager{profile_manager_}, user_id{user_id_} {
         static const FunctionInfo functions[] = {
             {0, &IProfileCommon::Get, "Get"},
             {1, &IProfileCommon::GetBase, "GetBase"},
@@ -74,9 +296,7 @@ protected:
         ProfileBase profile_base{};
         ProfileData data{};
         if (profile_manager.GetProfileBaseAndData(user_id, profile_base, data)) {
-            std::array<u8, sizeof(ProfileData)> raw_data;
-            std::memcpy(raw_data.data(), &data, sizeof(ProfileData));
-            ctx.WriteBuffer(raw_data);
+            ctx.WriteBuffer(data);
             IPC::ResponseBuilder rb{ctx, 16};
             rb.Push(RESULT_SUCCESS);
             rb.PushRaw(profile_base);
@@ -108,7 +328,7 @@ protected:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
 
-        const FileUtil::IOFile image(GetImagePath(user_id), "rb");
+        const Common::FS::IOFile image(GetImagePath(user_id), "rb");
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
                         "Failed to load user provided image! Falling back to built-in backup...");
@@ -121,7 +341,7 @@ protected:
         std::vector<u8> buffer(size);
         image.ReadBytes(buffer.data(), buffer.size());
 
-        ctx.WriteBuffer(buffer.data(), buffer.size());
+        ctx.WriteBuffer(buffer);
         rb.Push<u32>(size);
     }
 
@@ -130,7 +350,7 @@ protected:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
 
-        const FileUtil::IOFile image(GetImagePath(user_id), "rb");
+        const Common::FS::IOFile image(GetImagePath(user_id), "rb");
 
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
@@ -155,7 +375,7 @@ protected:
         if (user_data.size() < sizeof(ProfileData)) {
             LOG_ERROR(Service_ACC, "ProfileData buffer too small!");
             IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERR_INVALID_BUFFER_SIZE);
+            rb.Push(ERR_INVALID_BUFFER);
             return;
         }
 
@@ -188,14 +408,14 @@ protected:
         if (user_data.size() < sizeof(ProfileData)) {
             LOG_ERROR(Service_ACC, "ProfileData buffer too small!");
             IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(ERR_INVALID_BUFFER_SIZE);
+            rb.Push(ERR_INVALID_BUFFER);
             return;
         }
 
         ProfileData data;
         std::memcpy(&data, user_data.data(), sizeof(ProfileData));
 
-        FileUtil::IOFile image(GetImagePath(user_id), "wb");
+        Common::FS::IOFile image(GetImagePath(user_id), "wb");
 
         if (!image.IsOpen() || !image.Resize(image_data.size()) ||
             image.WriteBytes(image_data.data(), image_data.size()) != image_data.size() ||
@@ -216,20 +436,72 @@ protected:
 
 class IProfile final : public IProfileCommon {
 public:
-    IProfile(Common::UUID user_id, ProfileManager& profile_manager)
-        : IProfileCommon("IProfile", false, user_id, profile_manager) {}
+    explicit IProfile(Core::System& system_, Common::UUID user_id_,
+                      ProfileManager& profile_manager_)
+        : IProfileCommon{system_, "IProfile", false, user_id_, profile_manager_} {}
 };
 
 class IProfileEditor final : public IProfileCommon {
 public:
-    IProfileEditor(Common::UUID user_id, ProfileManager& profile_manager)
-        : IProfileCommon("IProfileEditor", true, user_id, profile_manager) {}
+    explicit IProfileEditor(Core::System& system_, Common::UUID user_id_,
+                            ProfileManager& profile_manager_)
+        : IProfileCommon{system_, "IProfileEditor", true, user_id_, profile_manager_} {}
+};
+
+class IAsyncContext final : public ServiceFramework<IAsyncContext> {
+public:
+    explicit IAsyncContext(Core::System& system_) : ServiceFramework{system_, "IAsyncContext"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSystemEvent"},
+            {1, nullptr, "Cancel"},
+            {2, nullptr, "HasDone"},
+            {3, nullptr, "GetResult"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class ISessionObject final : public ServiceFramework<ISessionObject> {
+public:
+    explicit ISessionObject(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "ISessionObject"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {999, nullptr, "Dummy"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IGuestLoginRequest final : public ServiceFramework<IGuestLoginRequest> {
+public:
+    explicit IGuestLoginRequest(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IGuestLoginRequest"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSessionId"},
+            {11, nullptr, "Unknown"}, // 1.0.0 - 2.3.0 (the name is blank on Switchbrew)
+            {12, nullptr, "GetAccountId"},
+            {13, nullptr, "GetLinkedNintendoAccountId"},
+            {14, nullptr, "GetNickname"},
+            {15, nullptr, "GetProfileImage"},
+            {21, nullptr, "LoadIdTokenCache"}, // 3.0.0+
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
 };
 
 class IManagerForApplication final : public ServiceFramework<IManagerForApplication> {
 public:
-    explicit IManagerForApplication(Common::UUID user_id)
-        : ServiceFramework("IManagerForApplication"), user_id(user_id) {
+    explicit IManagerForApplication(Core::System& system_, Common::UUID user_id_)
+        : ServiceFramework{system_, "IManagerForApplication"}, user_id{user_id_} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &IManagerForApplication::CheckAvailability, "CheckAvailability"},
@@ -238,7 +510,7 @@ public:
             {3, nullptr, "LoadIdTokenCache"},
             {130, nullptr, "GetNintendoAccountUserResourceCacheForApplication"},
             {150, nullptr, "CreateAuthorizationRequest"},
-            {160, nullptr, "StoreOpenContext"},
+            {160, &IManagerForApplication::StoreOpenContext, "StoreOpenContext"},
             {170, nullptr, "LoadNetworkServiceLicenseKindAsync"},
         };
         // clang-format on
@@ -262,7 +534,95 @@ private:
         rb.PushRaw<u64>(user_id.GetNintendoID());
     }
 
-    Common::UUID user_id;
+    void StoreOpenContext(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(RESULT_SUCCESS);
+    }
+
+    Common::UUID user_id{Common::INVALID_UUID};
+};
+
+// 6.0.0+
+class IAsyncNetworkServiceLicenseKindContext final
+    : public ServiceFramework<IAsyncNetworkServiceLicenseKindContext> {
+public:
+    explicit IAsyncNetworkServiceLicenseKindContext(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IAsyncNetworkServiceLicenseKindContext"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetSystemEvent"},
+            {1, nullptr, "Cancel"},
+            {2, nullptr, "HasDone"},
+            {3, nullptr, "GetResult"},
+            {4, nullptr, "GetNetworkServiceLicenseKind"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+// 8.0.0+
+class IOAuthProcedureForUserRegistration final
+    : public ServiceFramework<IOAuthProcedureForUserRegistration> {
+public:
+    explicit IOAuthProcedureForUserRegistration(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IOAuthProcedureForUserRegistration"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "PrepareAsync"},
+            {1, nullptr, "GetRequest"},
+            {2, nullptr, "ApplyResponse"},
+            {3, nullptr, "ApplyResponseAsync"},
+            {10, nullptr, "Suspend"},
+            {100, nullptr, "GetAccountId"},
+            {101, nullptr, "GetLinkedNintendoAccountId"},
+            {102, nullptr, "GetNickname"},
+            {103, nullptr, "GetProfileImage"},
+            {110, nullptr, "RegisterUserAsync"},
+            {111, nullptr, "GetUid"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class DAUTH_O final : public ServiceFramework<DAUTH_O> {
+public:
+    explicit DAUTH_O(Core::System& system_, Common::UUID) : ServiceFramework{system_, "dauth:o"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "EnsureAuthenticationTokenCacheAsync"}, // [5.0.0-5.1.0] GeneratePostData
+            {1, nullptr, "LoadAuthenticationTokenCache"}, // 6.0.0+
+            {2, nullptr, "InvalidateAuthenticationTokenCache"}, // 6.0.0+
+            {10, nullptr, "EnsureEdgeTokenCacheAsync"}, // 6.0.0+
+            {11, nullptr, "LoadEdgeTokenCache"}, // 6.0.0+
+            {12, nullptr, "InvalidateEdgeTokenCache"}, // 6.0.0+
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+// 6.0.0+
+class IAsyncResult final : public ServiceFramework<IAsyncResult> {
+public:
+    explicit IAsyncResult(Core::System& system_, Common::UUID)
+        : ServiceFramework{system_, "IAsyncResult"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "GetResult"},
+            {1, nullptr, "Cancel"},
+            {2, nullptr, "IsAvailable"},
+            {3, nullptr, "GetSystemEvent"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
 };
 
 void Module::Interface::GetUserCount(Kernel::HLERequestContext& ctx) {
@@ -310,7 +670,7 @@ void Module::Interface::GetProfile(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IProfile>(user_id, *profile_manager);
+    rb.PushIpcInterface<IProfile>(system, user_id, *profile_manager);
 }
 
 void Module::Interface::IsUserRegistrationRequestPermitted(Kernel::HLERequestContext& ctx) {
@@ -385,7 +745,7 @@ void Module::Interface::GetBaasAccountManagerForApplication(Kernel::HLERequestCo
     LOG_DEBUG(Service_ACC, "called");
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IManagerForApplication>(profile_manager->GetLastOpenedUser());
+    rb.PushIpcInterface<IManagerForApplication>(system, profile_manager->GetLastOpenedUser());
 }
 
 void Module::Interface::IsUserAccountSwitchLocked(Kernel::HLERequestContext& ctx) {
@@ -396,8 +756,10 @@ void Module::Interface::IsUserAccountSwitchLocked(Kernel::HLERequestContext& ctx
     bool is_locked = false;
 
     if (res != Loader::ResultStatus::Success) {
-        FileSys::PatchManager pm{system.CurrentProcess()->GetTitleID()};
-        auto nacp_unique = pm.GetControlMetadata().first;
+        const FileSys::PatchManager pm{system.CurrentProcess()->GetTitleID(),
+                                       system.GetFileSystemController(),
+                                       system.GetContentProvider()};
+        const auto nacp_unique = pm.GetControlMetadata().first;
 
         if (nacp_unique != nullptr) {
             is_locked = nacp_unique->GetUserAccountSwitchLock();
@@ -421,7 +783,7 @@ void Module::Interface::GetProfileEditor(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IProfileEditor>(user_id, *profile_manager);
+    rb.PushIpcInterface<IProfileEditor>(system, user_id, *profile_manager);
 }
 
 void Module::Interface::ListQualifiedUsers(Kernel::HLERequestContext& ctx) {
@@ -432,6 +794,75 @@ void Module::Interface::ListQualifiedUsers(Kernel::HLERequestContext& ctx) {
     // the game regardless of parental control settings.
     ctx.WriteBuffer(profile_manager->GetAllUsers());
     IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void Module::Interface::LoadOpenContext(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_ACC, "(STUBBED) called");
+
+    // This is similar to GetBaasAccountManagerForApplication
+    // This command is used concurrently with ListOpenContextStoredUsers
+    // TODO: Find the differences between this and GetBaasAccountManagerForApplication
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(RESULT_SUCCESS);
+    rb.PushIpcInterface<IManagerForApplication>(system, profile_manager->GetLastOpenedUser());
+}
+
+void Module::Interface::ListOpenContextStoredUsers(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_ACC, "(STUBBED) called");
+
+    // TODO(ogniK): Handle open contexts
+    ctx.WriteBuffer(profile_manager->GetOpenUsers());
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void Module::Interface::StoreSaveDataThumbnailApplication(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto uuid = rp.PopRaw<Common::UUID>();
+
+    LOG_WARNING(Service_ACC, "(STUBBED) called, uuid={}", uuid.Format());
+
+    // TODO(ogniK): Check if application ID is zero on acc initialize. As we don't have a reliable
+    // way of confirming things like the TID, we're going to assume a non zero value for the time
+    // being.
+    constexpr u64 tid{1};
+    StoreSaveDataThumbnail(ctx, uuid, tid);
+}
+
+void Module::Interface::StoreSaveDataThumbnailSystem(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto uuid = rp.PopRaw<Common::UUID>();
+    const auto tid = rp.Pop<u64_le>();
+
+    LOG_WARNING(Service_ACC, "(STUBBED) called, uuid={}, tid={:016X}", uuid.Format(), tid);
+    StoreSaveDataThumbnail(ctx, uuid, tid);
+}
+
+void Module::Interface::StoreSaveDataThumbnail(Kernel::HLERequestContext& ctx,
+                                               const Common::UUID& uuid, const u64 tid) {
+    IPC::ResponseBuilder rb{ctx, 2};
+
+    if (tid == 0) {
+        LOG_ERROR(Service_ACC, "TitleID is not valid!");
+        rb.Push(ERR_INVALID_APPLICATION_ID);
+        return;
+    }
+
+    if (!uuid) {
+        LOG_ERROR(Service_ACC, "User ID is not valid!");
+        rb.Push(ERR_INVALID_USER_ID);
+        return;
+    }
+    const auto thumbnail_size = ctx.GetReadBufferSize();
+    if (thumbnail_size != THUMBNAIL_SIZE) {
+        LOG_ERROR(Service_ACC, "Buffer size is empty! size={:X} expecting {:X}", thumbnail_size,
+                  THUMBNAIL_SIZE);
+        rb.Push(ERR_INVALID_BUFFER_SIZE);
+        return;
+    }
+
+    // TODO(ogniK): Construct save data thumbnail
     rb.Push(RESULT_SUCCESS);
 }
 
@@ -459,11 +890,11 @@ void Module::Interface::TrySelectUserWithoutInteraction(Kernel::HLERequestContex
     rb.PushRaw<u128>(profile_manager->GetUser(0)->uuid);
 }
 
-Module::Interface::Interface(std::shared_ptr<Module> module,
-                             std::shared_ptr<ProfileManager> profile_manager, Core::System& system,
-                             const char* name)
-    : ServiceFramework(name), module(std::move(module)),
-      profile_manager(std::move(profile_manager)), system(system) {}
+Module::Interface::Interface(std::shared_ptr<Module> module_,
+                             std::shared_ptr<ProfileManager> profile_manager_,
+                             Core::System& system_, const char* name)
+    : ServiceFramework{system_, name}, module{std::move(module_)}, profile_manager{std::move(
+                                                                       profile_manager_)} {}
 
 Module::Interface::~Interface() = default;
 

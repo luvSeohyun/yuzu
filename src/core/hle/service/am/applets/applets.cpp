@@ -5,6 +5,7 @@
 #include <cstring>
 #include "common/assert.h"
 #include "core/core.h"
+#include "core/frontend/applets/controller.h"
 #include "core/frontend/applets/error.h"
 #include "core/frontend/applets/general_frontend.h"
 #include "core/frontend/applets/profile_select.h"
@@ -15,6 +16,7 @@
 #include "core/hle/kernel/writable_event.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/am/applets/applets.h"
+#include "core/hle/service/am/applets/controller.h"
 #include "core/hle/service/am/applets/error.h"
 #include "core/hle/service/am/applets/general_backend.h"
 #include "core/hle/service/am/applets/profile_select.h"
@@ -140,14 +142,14 @@ void Applet::Initialize() {
 
 AppletFrontendSet::AppletFrontendSet() = default;
 
-AppletFrontendSet::AppletFrontendSet(ParentalControlsApplet parental_controls, ErrorApplet error,
-                                     PhotoViewer photo_viewer, ProfileSelect profile_select,
-                                     SoftwareKeyboard software_keyboard, WebBrowser web_browser,
-                                     ECommerceApplet e_commerce)
-    : parental_controls{std::move(parental_controls)}, error{std::move(error)},
-      photo_viewer{std::move(photo_viewer)}, profile_select{std::move(profile_select)},
-      software_keyboard{std::move(software_keyboard)}, web_browser{std::move(web_browser)},
-      e_commerce{std::move(e_commerce)} {}
+AppletFrontendSet::AppletFrontendSet(ControllerApplet controller_applet, ErrorApplet error_applet,
+                                     ParentalControlsApplet parental_controls_applet,
+                                     PhotoViewer photo_viewer_, ProfileSelect profile_select_,
+                                     SoftwareKeyboard software_keyboard_, WebBrowser web_browser_)
+    : controller{std::move(controller_applet)}, error{std::move(error_applet)},
+      parental_controls{std::move(parental_controls_applet)},
+      photo_viewer{std::move(photo_viewer_)}, profile_select{std::move(profile_select_)},
+      software_keyboard{std::move(software_keyboard_)}, web_browser{std::move(web_browser_)} {}
 
 AppletFrontendSet::~AppletFrontendSet() = default;
 
@@ -164,20 +166,33 @@ const AppletFrontendSet& AppletManager::GetAppletFrontendSet() const {
 }
 
 void AppletManager::SetAppletFrontendSet(AppletFrontendSet set) {
-    if (set.parental_controls != nullptr)
-        frontend.parental_controls = std::move(set.parental_controls);
-    if (set.error != nullptr)
+    if (set.controller != nullptr) {
+        frontend.controller = std::move(set.controller);
+    }
+
+    if (set.error != nullptr) {
         frontend.error = std::move(set.error);
-    if (set.photo_viewer != nullptr)
+    }
+
+    if (set.parental_controls != nullptr) {
+        frontend.parental_controls = std::move(set.parental_controls);
+    }
+
+    if (set.photo_viewer != nullptr) {
         frontend.photo_viewer = std::move(set.photo_viewer);
-    if (set.profile_select != nullptr)
+    }
+
+    if (set.profile_select != nullptr) {
         frontend.profile_select = std::move(set.profile_select);
-    if (set.software_keyboard != nullptr)
+    }
+
+    if (set.software_keyboard != nullptr) {
         frontend.software_keyboard = std::move(set.software_keyboard);
-    if (set.web_browser != nullptr)
+    }
+
+    if (set.web_browser != nullptr) {
         frontend.web_browser = std::move(set.web_browser);
-    if (set.e_commerce != nullptr)
-        frontend.e_commerce = std::move(set.e_commerce);
+    }
 }
 
 void AppletManager::SetDefaultAppletFrontendSet() {
@@ -186,13 +201,18 @@ void AppletManager::SetDefaultAppletFrontendSet() {
 }
 
 void AppletManager::SetDefaultAppletsIfMissing() {
-    if (frontend.parental_controls == nullptr) {
-        frontend.parental_controls =
-            std::make_unique<Core::Frontend::DefaultParentalControlsApplet>();
+    if (frontend.controller == nullptr) {
+        frontend.controller =
+            std::make_unique<Core::Frontend::DefaultControllerApplet>(system.ServiceManager());
     }
 
     if (frontend.error == nullptr) {
         frontend.error = std::make_unique<Core::Frontend::DefaultErrorApplet>();
+    }
+
+    if (frontend.parental_controls == nullptr) {
+        frontend.parental_controls =
+            std::make_unique<Core::Frontend::DefaultParentalControlsApplet>();
     }
 
     if (frontend.photo_viewer == nullptr) {
@@ -211,10 +231,6 @@ void AppletManager::SetDefaultAppletsIfMissing() {
     if (frontend.web_browser == nullptr) {
         frontend.web_browser = std::make_unique<Core::Frontend::DefaultWebBrowserApplet>();
     }
-
-    if (frontend.e_commerce == nullptr) {
-        frontend.e_commerce = std::make_unique<Core::Frontend::DefaultECommerceApplet>();
-    }
 }
 
 void AppletManager::ClearAll() {
@@ -225,19 +241,22 @@ std::shared_ptr<Applet> AppletManager::GetApplet(AppletId id) const {
     switch (id) {
     case AppletId::Auth:
         return std::make_shared<Auth>(system, *frontend.parental_controls);
+    case AppletId::Controller:
+        return std::make_shared<Controller>(system, *frontend.controller);
     case AppletId::Error:
         return std::make_shared<Error>(system, *frontend.error);
     case AppletId::ProfileSelect:
         return std::make_shared<ProfileSelect>(system, *frontend.profile_select);
     case AppletId::SoftwareKeyboard:
         return std::make_shared<SoftwareKeyboard>(system, *frontend.software_keyboard);
+    case AppletId::Web:
+    case AppletId::Shop:
+    case AppletId::OfflineWeb:
+    case AppletId::LoginShare:
+    case AppletId::WebAuth:
+        return std::make_shared<WebBrowser>(system, *frontend.web_browser);
     case AppletId::PhotoViewer:
         return std::make_shared<PhotoViewer>(system, *frontend.photo_viewer);
-    case AppletId::LibAppletShop:
-        return std::make_shared<WebBrowser>(system, *frontend.web_browser,
-                                            frontend.e_commerce.get());
-    case AppletId::LibAppletOff:
-        return std::make_shared<WebBrowser>(system, *frontend.web_browser);
     default:
         UNIMPLEMENTED_MSG(
             "No backend implementation exists for applet_id={:02X}! Falling back to stub applet.",

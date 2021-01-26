@@ -39,7 +39,7 @@ public:
 
     class Scoped {
     public:
-        explicit Scoped(GraphicsContext& context_) : context(context_) {
+        [[nodiscard]] explicit Scoped(GraphicsContext& context_) : context(context_) {
             context.MakeCurrent();
         }
         ~Scoped() {
@@ -52,7 +52,7 @@ public:
 
     /// Calls MakeCurrent on the context and calls DoneCurrent when the scope for the returned value
     /// ends
-    Scoped Acquire() {
+    [[nodiscard]] Scoped Acquire() {
         return Scoped{*this};
     }
 };
@@ -102,8 +102,8 @@ public:
         float render_surface_scale = 1.0f;
     };
 
-    /// Polls window events
-    virtual void PollEvents() = 0;
+    /// Called from GPU thread when a frame is displayed.
+    virtual void OnFrameDisplayed() {}
 
     /**
      * Returns a GraphicsContext that the frontend provides to be used for rendering.
@@ -117,18 +117,23 @@ public:
      * Signal that a touch pressed event has occurred (e.g. mouse click pressed)
      * @param framebuffer_x Framebuffer x-coordinate that was pressed
      * @param framebuffer_y Framebuffer y-coordinate that was pressed
+     * @param id Touch event ID
      */
-    void TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y);
+    void TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y, std::size_t id);
 
-    /// Signal that a touch released event has occurred (e.g. mouse click released)
-    void TouchReleased();
+    /**
+     * Signal that a touch released event has occurred (e.g. mouse click released)
+     * @param id Touch event ID
+     */
+    void TouchReleased(std::size_t id);
 
     /**
      * Signal that a touch movement event has occurred (e.g. mouse was moved over the emu window)
      * @param framebuffer_x Framebuffer x-coordinate
      * @param framebuffer_y Framebuffer y-coordinate
+     * @param id Touch event ID
      */
-    void TouchMoved(unsigned framebuffer_x, unsigned framebuffer_y);
+    void TouchMoved(unsigned framebuffer_x, unsigned framebuffer_y, std::size_t id);
 
     /**
      * Returns currently active configuration.

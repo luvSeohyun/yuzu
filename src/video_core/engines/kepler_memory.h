@@ -35,7 +35,7 @@ namespace Tegra::Engines {
 
 class KeplerMemory final : public EngineInterface {
 public:
-    KeplerMemory(Core::System& system, MemoryManager& memory_manager);
+    explicit KeplerMemory(Core::System& system_, MemoryManager& memory_manager);
     ~KeplerMemory();
 
     /// Write the value to the register identified by method.
@@ -50,7 +50,7 @@ public:
 
         union {
             struct {
-                INSERT_UNION_PADDING_WORDS(0x60);
+                INSERT_PADDING_WORDS_NOINIT(0x60);
 
                 Upload::Registers upload;
 
@@ -62,7 +62,7 @@ public:
 
                 u32 data;
 
-                INSERT_UNION_PADDING_WORDS(0x11);
+                INSERT_PADDING_WORDS_NOINIT(0x11);
             };
             std::array<u32, NUM_REGS> reg_array;
         };

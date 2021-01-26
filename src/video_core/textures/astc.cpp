@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <span>
 #include <vector>
 
 #include <boost/container/static_vector.hpp>
@@ -41,21 +42,24 @@ constexpr u32 Popcnt(u32 n) {
 
 class InputBitStream {
 public:
-    constexpr explicit InputBitStream(const u8* ptr, std::size_t start_offset = 0)
-        : cur_byte{ptr}, next_bit{start_offset % 8} {}
+    constexpr explicit InputBitStream(std::span<const u8> data, size_t start_offset = 0)
+        : cur_byte{data.data()}, total_bits{data.size()}, next_bit{start_offset % 8} {}
 
-    constexpr std::size_t GetBitsRead() const {
+    constexpr size_t GetBitsRead() const {
         return bits_read;
     }
 
     constexpr bool ReadBit() {
-        const bool bit = (*cur_byte >> next_bit++) & 1;
+        if (bits_read >= total_bits * 8) {
+            return 0;
+        }
+        const bool bit = ((*cur_byte >> next_bit) & 1) != 0;
+        ++next_bit;
         while (next_bit >= 8) {
             next_bit -= 8;
-            cur_byte++;
+            ++cur_byte;
         }
-
-        bits_read++;
+        ++bits_read;
         return bit;
     }
 
@@ -78,8 +82,9 @@ public:
 
 private:
     const u8* cur_byte;
-    std::size_t next_bit = 0;
-    std::size_t bits_read = 0;
+    size_t total_bits = 0;
+    size_t next_bit = 0;
+    size_t bits_read = 0;
 };
 
 class OutputBitStream {
@@ -192,15 +197,15 @@ struct IntegerEncodedValue {
     };
 };
 using IntegerEncodedVector = boost::container::static_vector<
-    IntegerEncodedValue, 64,
+    IntegerEncodedValue, 256,
     boost::container::static_vector_options<
         boost::container::inplace_alignment<alignof(IntegerEncodedValue)>,
         boost::container::throw_on_overflow<false>>::type>;
 
 static void DecodeTritBlock(InputBitStream& bits, IntegerEncodedVector& result, u32 nBitsPerValue) {
     // Implement the algorithm in section C.2.12
-    u32 m[5];
-    u32 t[5];
+    std::array<u32, 5> m;
+    std::array<u32, 5> t;
     u32 T;
 
     // Read the trit encoded block according to
@@ -600,7 +605,7 @@ static TexelWeightParams DecodeBlockInfo(InputBitStream& strm) {
     return params;
 }
 
-static void FillVoidExtentLDR(InputBitStream& strm, u32* const outBuf, u32 blockWidth,
+static void FillVoidExtentLDR(InputBitStream& strm, std::span<u32> outBuf, u32 blockWidth,
                               u32 blockHeight) {
     // Don't actually care about the void extent, just read the bits...
     for (s32 i = 0; i < 4; ++i) {
@@ -623,7 +628,7 @@ static void FillVoidExtentLDR(InputBitStream& strm, u32* const outBuf, u32 block
     }
 }
 
-static void FillError(u32* outBuf, u32 blockWidth, u32 blockHeight) {
+static void FillError(std::span<u32> outBuf, u32 blockWidth, u32 blockHeight) {
     for (u32 j = 0; j < blockHeight; j++) {
         for (u32 i = 0; i < blockWidth; i++) {
             outBuf[j * blockWidth + i] = 0xFFFF00FF;
@@ -865,7 +870,7 @@ public:
     }
 };
 
-static void DecodeColorValues(u32* out, u8* data, const u32* modes, const u32 nPartitions,
+static void DecodeColorValues(u32* out, std::span<u8> data, const u32* modes, const u32 nPartitions,
                               const u32 nBitsForColorData) {
     // First figure out how many color values we have
     u32 nValues = 0;
@@ -897,7 +902,7 @@ static void DecodeColorValues(u32* out, u8* data, const u32* modes, const u32 nP
     // We now have enough to decode our integer sequence.
     IntegerEncodedVector decodedColorValues;
 
-    InputBitStream colorStream(data);
+    InputBitStream colorStream(data, 0);
     DecodeIntegerSequence(decodedColorValues, colorStream, range, nValues);
 
     // Once we have the decoded values, we need to dequantize them to the 0-255 range
@@ -1438,8 +1443,8 @@ static void ComputeEndpos32s(Pixel& ep1, Pixel& ep2, const u32*& colorValues,
 #undef READ_INT_VALUES
 }
 
-static void DecompressBlock(const u8 inBuf[16], const u32 blockWidth, const u32 blockHeight,
-                            u32* outBuf) {
+static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
+                            const u32 blockHeight, std::span<u32, 12 * 12> outBuf) {
     InputBitStream strm(inBuf);
     TexelWeightParams weightParams = DecodeBlockInfo(strm);
 
@@ -1601,8 +1606,8 @@ static void DecompressBlock(const u8 inBuf[16], const u32 blockWidth, const u32 
     }
 
     // Read the texel weight data..
-    u8 texelWeightData[16];
-    memcpy(texelWeightData, inBuf, sizeof(texelWeightData));
+    std::array<u8, 16> texelWeightData;
+    std::ranges::copy(inBuf, texelWeightData.begin());
 
     // Reverse everything
     for (u32 i = 0; i < 8; i++) {
@@ -1618,10 +1623,12 @@ static void DecompressBlock(const u8 inBuf[16], const u32 blockWidth, const u32 
 
     // Make sure that higher non-texel bits are set to zero
     const u32 clearByteStart = (weightParams.GetPackedBitSize() >> 3) + 1;
-    texelWeightData[clearByteStart - 1] =
-        texelWeightData[clearByteStart - 1] &
-        static_cast<u8>((1 << (weightParams.GetPackedBitSize() % 8)) - 1);
-    memset(texelWeightData + clearByteStart, 0, 16 - clearByteStart);
+    if (clearByteStart > 0 && clearByteStart <= texelWeightData.size()) {
+        texelWeightData[clearByteStart - 1] &=
+            static_cast<u8>((1 << (weightParams.GetPackedBitSize() % 8)) - 1);
+        std::memset(texelWeightData.data() + clearByteStart, 0,
+                    std::min(16U - clearByteStart, 16U));
+    }
 
     IntegerEncodedVector texelWeightValues;
 
@@ -1672,36 +1679,32 @@ static void DecompressBlock(const u8 inBuf[16], const u32 blockWidth, const u32 
 
 namespace Tegra::Texture::ASTC {
 
-std::vector<u8> Decompress(const u8* data, u32 width, u32 height, u32 depth, u32 block_width,
-                           u32 block_height) {
-    u32 blockIdx = 0;
+void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, uint32_t depth,
+                uint32_t block_width, uint32_t block_height, std::span<uint8_t> output) {
+    u32 block_index = 0;
     std::size_t depth_offset = 0;
-    std::vector<u8> outData(height * width * depth * 4);
-    for (u32 k = 0; k < depth; k++) {
-        for (u32 j = 0; j < height; j += block_height) {
-            for (u32 i = 0; i < width; i += block_width) {
-
-                const u8* blockPtr = data + blockIdx * 16;
+    for (u32 z = 0; z < depth; z++) {
+        for (u32 y = 0; y < height; y += block_height) {
+            for (u32 x = 0; x < width; x += block_width) {
+                const std::span<const u8, 16> blockPtr{data.subspan(block_index * 16, 16)};
 
                 // Blocks can be at most 12x12
-                u32 uncompData[144];
+                std::array<u32, 12 * 12> uncompData;
                 ASTCC::DecompressBlock(blockPtr, block_width, block_height, uncompData);
 
-                u32 decompWidth = std::min(block_width, width - i);
-                u32 decompHeight = std::min(block_height, height - j);
+                u32 decompWidth = std::min(block_width, width - x);
+                u32 decompHeight = std::min(block_height, height - y);
 
-                u8* outRow = depth_offset + outData.data() + (j * width + i) * 4;
+                const std::span<u8> outRow = output.subspan(depth_offset + (y * width + x) * 4);
                 for (u32 jj = 0; jj < decompHeight; jj++) {
-                    memcpy(outRow + jj * width * 4, uncompData + jj * block_width, decompWidth * 4);
+                    std::memcpy(outRow.data() + jj * width * 4,
+                                uncompData.data() + jj * block_width, decompWidth * 4);
                 }
-
-                blockIdx++;
+                ++block_index;
             }
         }
         depth_offset += height * width * 4;
     }
-
-    return outData;
 }
 
 } // namespace Tegra::Texture::ASTC

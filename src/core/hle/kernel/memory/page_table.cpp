@@ -265,7 +265,7 @@ ResultCode PageTable::InitializeForProcess(FileSys::ProgramAddressSpaceType as_t
     physical_memory_usage = 0;
     memory_pool = pool;
 
-    page_table_impl.Resize(address_space_width, PageBits, true);
+    page_table_impl.Resize(address_space_width, PageBits);
 
     return InitializeMemoryLayout(start, end);
 }
@@ -604,7 +604,6 @@ ResultCode PageTable::MapPages(VAddr addr, const PageLinkedList& page_linked_lis
         if (const auto result{
                 Operate(cur_addr, node.GetNumPages(), perm, OperationType::Map, node.GetAddress())};
             result.IsError()) {
-            const MemoryInfo info{block_manager->FindBlock(cur_addr).GetMemoryInfo()};
             const std::size_t num_pages{(addr - cur_addr) / PageSize};
 
             ASSERT(
@@ -669,6 +668,11 @@ ResultCode PageTable::SetCodeMemoryPermission(VAddr addr, std::size_t size, Memo
     // Return early if there is nothing to change
     if (state == prev_state && perm == prev_perm) {
         return RESULT_SUCCESS;
+    }
+
+    if ((prev_perm & MemoryPermission::Execute) != (perm & MemoryPermission::Execute)) {
+        // Memory execution state is changing, invalidate CPU cache range
+        system.InvalidateCpuInstructionCacheRange(addr, size);
     }
 
     const std::size_t num_pages{size / PageSize};
@@ -852,11 +856,12 @@ ResultCode PageTable::LockForDeviceAddressSpace(VAddr addr, std::size_t size) {
         return result;
     }
 
-    block_manager->UpdateLock(addr, size / PageSize,
-                              [](MemoryBlockManager::iterator block, MemoryPermission perm) {
-                                  block->ShareToDevice(perm);
-                              },
-                              perm);
+    block_manager->UpdateLock(
+        addr, size / PageSize,
+        [](MemoryBlockManager::iterator block, MemoryPermission perm) {
+            block->ShareToDevice(perm);
+        },
+        perm);
 
     return RESULT_SUCCESS;
 }
@@ -874,11 +879,12 @@ ResultCode PageTable::UnlockForDeviceAddressSpace(VAddr addr, std::size_t size) 
         return result;
     }
 
-    block_manager->UpdateLock(addr, size / PageSize,
-                              [](MemoryBlockManager::iterator block, MemoryPermission perm) {
-                                  block->UnshareToDevice(perm);
-                              },
-                              perm);
+    block_manager->UpdateLock(
+        addr, size / PageSize,
+        [](MemoryBlockManager::iterator block, MemoryPermission perm) {
+            block->UnshareToDevice(perm);
+        },
+        perm);
 
     return RESULT_SUCCESS;
 }
@@ -1001,8 +1007,8 @@ constexpr VAddr PageTable::GetRegionAddress(MemoryState state) const {
     case MemoryState::Shared:
     case MemoryState::AliasCode:
     case MemoryState::AliasCodeData:
-    case MemoryState::Transfered:
-    case MemoryState::SharedTransfered:
+    case MemoryState::Transferred:
+    case MemoryState::SharedTransferred:
     case MemoryState::SharedCode:
     case MemoryState::GeneratedCode:
     case MemoryState::CodeOut:
@@ -1036,8 +1042,8 @@ constexpr std::size_t PageTable::GetRegionSize(MemoryState state) const {
     case MemoryState::Shared:
     case MemoryState::AliasCode:
     case MemoryState::AliasCodeData:
-    case MemoryState::Transfered:
-    case MemoryState::SharedTransfered:
+    case MemoryState::Transferred:
+    case MemoryState::SharedTransferred:
     case MemoryState::SharedCode:
     case MemoryState::GeneratedCode:
     case MemoryState::CodeOut:
@@ -1074,8 +1080,8 @@ constexpr bool PageTable::CanContain(VAddr addr, std::size_t size, MemoryState s
     case MemoryState::AliasCodeData:
     case MemoryState::Stack:
     case MemoryState::ThreadLocal:
-    case MemoryState::Transfered:
-    case MemoryState::SharedTransfered:
+    case MemoryState::Transferred:
+    case MemoryState::SharedTransferred:
     case MemoryState::SharedCode:
     case MemoryState::GeneratedCode:
     case MemoryState::CodeOut:

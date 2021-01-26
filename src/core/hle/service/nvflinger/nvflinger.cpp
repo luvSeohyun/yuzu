@@ -9,6 +9,7 @@
 #include "common/logging/log.h"
 #include "common/microprofile.h"
 #include "common/scope_exit.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/core_timing_util.h"
@@ -27,8 +28,38 @@
 
 namespace Service::NVFlinger {
 
-constexpr s64 frame_ticks = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 60);
-constexpr s64 frame_ticks_30fps = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 30);
+constexpr auto frame_ns = std::chrono::nanoseconds{1000000000 / 60};
+
+void NVFlinger::VSyncThread(NVFlinger& nv_flinger) {
+    nv_flinger.SplitVSync();
+}
+
+void NVFlinger::SplitVSync() {
+    system.RegisterHostThread();
+    std::string name = "yuzu:VSyncThread";
+    MicroProfileOnThreadCreate(name.c_str());
+
+    // Cleanup
+    SCOPE_EXIT({ MicroProfileOnThreadExit(); });
+
+    Common::SetCurrentThreadName(name.c_str());
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+    s64 delay = 0;
+    while (is_running) {
+        guard->lock();
+        const s64 time_start = system.CoreTiming().GetGlobalTimeNs().count();
+        Compose();
+        const auto ticks = GetNextTicks();
+        const s64 time_end = system.CoreTiming().GetGlobalTimeNs().count();
+        const s64 time_passed = time_end - time_start;
+        const s64 next_time = std::max<s64>(0, ticks - time_passed - delay);
+        guard->unlock();
+        if (next_time > 0) {
+            wait_event->WaitFor(std::chrono::nanoseconds{next_time});
+        }
+        delay = (system.CoreTiming().GetGlobalTimeNs().count() - time_end) - next_time;
+    }
+}
 
 NVFlinger::NVFlinger(Core::System& system) : system(system) {
     displays.emplace_back(0, "Default", system);
@@ -36,22 +67,44 @@ NVFlinger::NVFlinger(Core::System& system) : system(system) {
     displays.emplace_back(2, "Edid", system);
     displays.emplace_back(3, "Internal", system);
     displays.emplace_back(4, "Null", system);
+    guard = std::make_shared<std::mutex>();
 
     // Schedule the screen composition events
-    composition_event =
-        Core::Timing::CreateEvent("ScreenComposition", [this](u64 userdata, s64 cycles_late) {
+    composition_event = Core::Timing::CreateEvent(
+        "ScreenComposition", [this](std::uintptr_t, std::chrono::nanoseconds ns_late) {
+            const auto guard = Lock();
             Compose();
-            const auto ticks =
-                Settings::values.force_30fps_mode ? frame_ticks_30fps : GetNextTicks();
-            this->system.CoreTiming().ScheduleEvent(std::max<s64>(0LL, ticks - cycles_late),
-                                                    composition_event);
+
+            const auto ticks = std::chrono::nanoseconds{GetNextTicks()};
+            const auto ticks_delta = ticks - ns_late;
+            const auto future_ns = std::max(std::chrono::nanoseconds::zero(), ticks_delta);
+
+            this->system.CoreTiming().ScheduleEvent(future_ns, composition_event);
         });
 
-    system.CoreTiming().ScheduleEvent(frame_ticks, composition_event);
+    if (system.IsMulticore()) {
+        is_running = true;
+        wait_event = std::make_unique<Common::Event>();
+        vsync_thread = std::make_unique<std::thread>(VSyncThread, std::ref(*this));
+    } else {
+        system.CoreTiming().ScheduleEvent(frame_ns, composition_event);
+    }
 }
 
 NVFlinger::~NVFlinger() {
-    system.CoreTiming().UnscheduleEvent(composition_event, 0);
+    for (auto& buffer_queue : buffer_queues) {
+        buffer_queue->Disconnect();
+    }
+
+    if (system.IsMulticore()) {
+        is_running = false;
+        wait_event->Set();
+        vsync_thread->join();
+        vsync_thread.reset();
+        wait_event.reset();
+    } else {
+        system.CoreTiming().UnscheduleEvent(composition_event, 0);
+    }
 }
 
 void NVFlinger::SetNVDrvInstance(std::shared_ptr<Nvidia::Module> instance) {
@@ -59,6 +112,8 @@ void NVFlinger::SetNVDrvInstance(std::shared_ptr<Nvidia::Module> instance) {
 }
 
 std::optional<u64> NVFlinger::OpenDisplay(std::string_view name) {
+    const auto guard = Lock();
+
     LOG_DEBUG(Service, "Opening \"{}\" display", name);
 
     // TODO(Subv): Currently we only support the Default display.
@@ -69,43 +124,49 @@ std::optional<u64> NVFlinger::OpenDisplay(std::string_view name) {
                      [&](const VI::Display& display) { return display.GetName() == name; });
 
     if (itr == displays.end()) {
-        return {};
+        return std::nullopt;
     }
 
     return itr->GetID();
 }
 
 std::optional<u64> NVFlinger::CreateLayer(u64 display_id) {
+    const auto guard = Lock();
     auto* const display = FindDisplay(display_id);
 
     if (display == nullptr) {
-        return {};
+        return std::nullopt;
     }
 
     const u64 layer_id = next_layer_id++;
     const u32 buffer_queue_id = next_buffer_queue_id++;
-    buffer_queues.emplace_back(system.Kernel(), buffer_queue_id, layer_id);
-    display->CreateLayer(layer_id, buffer_queues.back());
+    buffer_queues.emplace_back(
+        std::make_unique<BufferQueue>(system.Kernel(), buffer_queue_id, layer_id));
+    display->CreateLayer(layer_id, *buffer_queues.back());
     return layer_id;
 }
 
 void NVFlinger::CloseLayer(u64 layer_id) {
+    const auto guard = Lock();
+
     for (auto& display : displays) {
         display.CloseLayer(layer_id);
     }
 }
 
 std::optional<u32> NVFlinger::FindBufferQueueId(u64 display_id, u64 layer_id) const {
+    const auto guard = Lock();
     const auto* const layer = FindLayer(display_id, layer_id);
 
     if (layer == nullptr) {
-        return {};
+        return std::nullopt;
     }
 
     return layer->GetBufferQueue().GetId();
 }
 
 std::shared_ptr<Kernel::ReadableEvent> NVFlinger::FindVsyncEvent(u64 display_id) const {
+    const auto guard = Lock();
     auto* const display = FindDisplay(display_id);
 
     if (display == nullptr) {
@@ -115,20 +176,16 @@ std::shared_ptr<Kernel::ReadableEvent> NVFlinger::FindVsyncEvent(u64 display_id)
     return display->GetVSyncEvent();
 }
 
-BufferQueue& NVFlinger::FindBufferQueue(u32 id) {
+BufferQueue* NVFlinger::FindBufferQueue(u32 id) {
+    const auto guard = Lock();
     const auto itr = std::find_if(buffer_queues.begin(), buffer_queues.end(),
-                                  [id](const auto& queue) { return queue.GetId() == id; });
+                                  [id](const auto& queue) { return queue->GetId() == id; });
 
-    ASSERT(itr != buffer_queues.end());
-    return *itr;
-}
+    if (itr == buffer_queues.end()) {
+        return nullptr;
+    }
 
-const BufferQueue& NVFlinger::FindBufferQueue(u32 id) const {
-    const auto itr = std::find_if(buffer_queues.begin(), buffer_queues.end(),
-                                  [id](const auto& queue) { return queue.GetId() == id; });
-
-    ASSERT(itr != buffer_queues.end());
-    return *itr;
+    return itr->get();
 }
 
 VI::Display* NVFlinger::FindDisplay(u64 display_id) {
@@ -197,12 +254,18 @@ void NVFlinger::Compose() {
 
         const auto& igbp_buffer = buffer->get().igbp_buffer;
 
+        if (!system.IsPoweredOn()) {
+            return; // We are likely shutting down
+        }
+
         auto& gpu = system.GPU();
         const auto& multi_fence = buffer->get().multi_fence;
+        guard->unlock();
         for (u32 fence_id = 0; fence_id < multi_fence.num_fences; fence_id++) {
             const auto& fence = multi_fence.fences[fence_id];
             gpu.WaitFence(fence.id, fence.value);
         }
+        guard->lock();
 
         MicroProfileFlip();
 
@@ -223,7 +286,7 @@ void NVFlinger::Compose() {
 
 s64 NVFlinger::GetNextTicks() const {
     constexpr s64 max_hertz = 120LL;
-    return (Core::Hardware::BASE_CLOCK_RATE * (1LL << swap_interval)) / max_hertz;
+    return (1000000000 * (1LL << swap_interval)) / max_hertz;
 }
 
 } // namespace Service::NVFlinger

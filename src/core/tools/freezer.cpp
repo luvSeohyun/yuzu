@@ -14,7 +14,7 @@
 namespace Tools {
 namespace {
 
-constexpr s64 MEMORY_FREEZER_TICKS = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 60);
+constexpr auto memory_freezer_ns = std::chrono::nanoseconds{1000000000 / 60};
 
 u64 MemoryReadWidth(Core::Memory::Memory& memory, u32 width, VAddr addr) {
     switch (width) {
@@ -57,8 +57,10 @@ Freezer::Freezer(Core::Timing::CoreTiming& core_timing_, Core::Memory::Memory& m
     : core_timing{core_timing_}, memory{memory_} {
     event = Core::Timing::CreateEvent(
         "MemoryFreezer::FrameCallback",
-        [this](u64 userdata, s64 cycles_late) { FrameCallback(userdata, cycles_late); });
-    core_timing.ScheduleEvent(MEMORY_FREEZER_TICKS, event);
+        [this](std::uintptr_t user_data, std::chrono::nanoseconds ns_late) {
+            FrameCallback(user_data, ns_late);
+        });
+    core_timing.ScheduleEvent(memory_freezer_ns, event);
 }
 
 Freezer::~Freezer() {
@@ -68,7 +70,7 @@ Freezer::~Freezer() {
 void Freezer::SetActive(bool active) {
     if (!this->active.exchange(active)) {
         FillEntryReads();
-        core_timing.ScheduleEvent(MEMORY_FREEZER_TICKS, event);
+        core_timing.ScheduleEvent(memory_freezer_ns, event);
         LOG_DEBUG(Common_Memory, "Memory freezer activated!");
     } else {
         LOG_DEBUG(Common_Memory, "Memory freezer deactivated!");
@@ -105,28 +107,21 @@ void Freezer::Unfreeze(VAddr address) {
 
     LOG_DEBUG(Common_Memory, "Unfreezing memory for address={:016X}", address);
 
-    entries.erase(
-        std::remove_if(entries.begin(), entries.end(),
-                       [&address](const Entry& entry) { return entry.address == address; }),
-        entries.end());
+    std::erase_if(entries, [address](const Entry& entry) { return entry.address == address; });
 }
 
 bool Freezer::IsFrozen(VAddr address) const {
     std::lock_guard lock{entries_mutex};
 
-    return std::find_if(entries.begin(), entries.end(), [&address](const Entry& entry) {
-               return entry.address == address;
-           }) != entries.end();
+    return FindEntry(address) != entries.cend();
 }
 
 void Freezer::SetFrozenValue(VAddr address, u64 value) {
     std::lock_guard lock{entries_mutex};
 
-    const auto iter = std::find_if(entries.begin(), entries.end(), [&address](const Entry& entry) {
-        return entry.address == address;
-    });
+    const auto iter = FindEntry(address);
 
-    if (iter == entries.end()) {
+    if (iter == entries.cend()) {
         LOG_ERROR(Common_Memory,
                   "Tried to set freeze value for address={:016X} that is not frozen!", address);
         return;
@@ -141,11 +136,9 @@ void Freezer::SetFrozenValue(VAddr address, u64 value) {
 std::optional<Freezer::Entry> Freezer::GetEntry(VAddr address) const {
     std::lock_guard lock{entries_mutex};
 
-    const auto iter = std::find_if(entries.begin(), entries.end(), [&address](const Entry& entry) {
-        return entry.address == address;
-    });
+    const auto iter = FindEntry(address);
 
-    if (iter == entries.end()) {
+    if (iter == entries.cend()) {
         return std::nullopt;
     }
 
@@ -158,7 +151,17 @@ std::vector<Freezer::Entry> Freezer::GetEntries() const {
     return entries;
 }
 
-void Freezer::FrameCallback(u64 userdata, s64 cycles_late) {
+Freezer::Entries::iterator Freezer::FindEntry(VAddr address) {
+    return std::find_if(entries.begin(), entries.end(),
+                        [address](const Entry& entry) { return entry.address == address; });
+}
+
+Freezer::Entries::const_iterator Freezer::FindEntry(VAddr address) const {
+    return std::find_if(entries.begin(), entries.end(),
+                        [address](const Entry& entry) { return entry.address == address; });
+}
+
+void Freezer::FrameCallback(std::uintptr_t, std::chrono::nanoseconds ns_late) {
     if (!IsActive()) {
         LOG_DEBUG(Common_Memory, "Memory freezer has been deactivated, ending callback events.");
         return;
@@ -173,7 +176,7 @@ void Freezer::FrameCallback(u64 userdata, s64 cycles_late) {
         MemoryWriteWidth(memory, entry.width, entry.address, entry.value);
     }
 
-    core_timing.ScheduleEvent(MEMORY_FREEZER_TICKS - cycles_late, event);
+    core_timing.ScheduleEvent(memory_freezer_ns - ns_late, event);
 }
 
 void Freezer::FillEntryReads() {

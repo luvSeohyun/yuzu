@@ -1,22 +1,22 @@
-if (YUZU_ENABLE_BOXCAT)
-    set(BCAT_BOXCAT_ADDITIONAL_SOURCES hle/service/bcat/backend/boxcat.cpp hle/service/bcat/backend/boxcat.h)
-else()
-    set(BCAT_BOXCAT_ADDITIONAL_SOURCES)
-endif()
-
 add_library(core STATIC
     arm/arm_interface.h
     arm/arm_interface.cpp
+    arm/cpu_interrupt_handler.cpp
+    arm/cpu_interrupt_handler.h
+    arm/dynarmic/arm_dynarmic_32.cpp
+    arm/dynarmic/arm_dynarmic_32.h
+    arm/dynarmic/arm_dynarmic_64.cpp
+    arm/dynarmic/arm_dynarmic_64.h
+    arm/dynarmic/arm_dynarmic_cp15.cpp
+    arm/dynarmic/arm_dynarmic_cp15.h
+    arm/dynarmic/arm_exclusive_monitor.cpp
+    arm/dynarmic/arm_exclusive_monitor.h
     arm/exclusive_monitor.cpp
     arm/exclusive_monitor.h
-    arm/unicorn/arm_unicorn.cpp
-    arm/unicorn/arm_unicorn.h
     constants.cpp
     constants.h
     core.cpp
     core.h
-    core_manager.cpp
-    core_manager.h
     core_timing.cpp
     core_timing.h
     core_timing_util.cpp
@@ -41,6 +41,7 @@ add_library(core STATIC
     file_sys/bis_factory.h
     file_sys/card_image.cpp
     file_sys/card_image.h
+    file_sys/common_funcs.h
     file_sys/content_archive.cpp
     file_sys/content_archive.h
     file_sys/control_metadata.cpp
@@ -118,6 +119,8 @@ add_library(core STATIC
     file_sys/vfs_vector.h
     file_sys/xts_archive.cpp
     file_sys/xts_archive.h
+    frontend/applets/controller.cpp
+    frontend/applets/controller.h
     frontend/applets/error.cpp
     frontend/applets/error.h
     frontend/applets/general_frontend.cpp
@@ -132,15 +135,13 @@ add_library(core STATIC
     frontend/emu_window.h
     frontend/framebuffer_layout.cpp
     frontend/framebuffer_layout.h
+    frontend/input_interpreter.cpp
+    frontend/input_interpreter.h
     frontend/input.h
-    gdbstub/gdbstub.cpp
-    gdbstub/gdbstub.h
     hardware_interrupt_manager.cpp
     hardware_interrupt_manager.h
     hle/ipc.h
     hle/ipc_helpers.h
-    hle/kernel/address_arbiter.cpp
-    hle/kernel/address_arbiter.h
     hle/kernel/client_port.cpp
     hle/kernel/client_port.h
     hle/kernel/client_session.cpp
@@ -148,10 +149,25 @@ add_library(core STATIC
     hle/kernel/code_set.cpp
     hle/kernel/code_set.h
     hle/kernel/errors.h
+    hle/kernel/global_scheduler_context.cpp
+    hle/kernel/global_scheduler_context.h
     hle/kernel/handle_table.cpp
     hle/kernel/handle_table.h
     hle/kernel/hle_ipc.cpp
     hle/kernel/hle_ipc.h
+    hle/kernel/k_address_arbiter.cpp
+    hle/kernel/k_address_arbiter.h
+    hle/kernel/k_affinity_mask.h
+    hle/kernel/k_condition_variable.cpp
+    hle/kernel/k_condition_variable.h
+    hle/kernel/k_priority_queue.h
+    hle/kernel/k_scheduler.cpp
+    hle/kernel/k_scheduler.h
+    hle/kernel/k_scheduler_lock.h
+    hle/kernel/k_scoped_lock.h
+    hle/kernel/k_scoped_scheduler_lock_and_sleep.h
+    hle/kernel/k_synchronization_object.cpp
+    hle/kernel/k_synchronization_object.h
     hle/kernel/kernel.cpp
     hle/kernel/kernel.h
     hle/kernel/memory/address_space_info.cpp
@@ -171,12 +187,11 @@ add_library(core STATIC
     hle/kernel/memory/slab_heap.h
     hle/kernel/memory/system_control.cpp
     hle/kernel/memory/system_control.h
-    hle/kernel/mutex.cpp
-    hle/kernel/mutex.h
     hle/kernel/object.cpp
     hle/kernel/object.h
     hle/kernel/physical_core.cpp
     hle/kernel/physical_core.h
+    hle/kernel/physical_memory.h
     hle/kernel/process.cpp
     hle/kernel/process.h
     hle/kernel/process_capability.cpp
@@ -185,24 +200,22 @@ add_library(core STATIC
     hle/kernel/readable_event.h
     hle/kernel/resource_limit.cpp
     hle/kernel/resource_limit.h
-    hle/kernel/scheduler.cpp
-    hle/kernel/scheduler.h
     hle/kernel/server_port.cpp
     hle/kernel/server_port.h
     hle/kernel/server_session.cpp
     hle/kernel/server_session.h
+    hle/kernel/service_thread.cpp
+    hle/kernel/service_thread.h
     hle/kernel/session.cpp
     hle/kernel/session.h
     hle/kernel/shared_memory.cpp
     hle/kernel/shared_memory.h
     hle/kernel/svc.cpp
     hle/kernel/svc.h
+    hle/kernel/svc_common.h
+    hle/kernel/svc_results.h
     hle/kernel/svc_types.h
     hle/kernel/svc_wrap.h
-    hle/kernel/synchronization_object.cpp
-    hle/kernel/synchronization_object.h
-    hle/kernel/synchronization.cpp
-    hle/kernel/synchronization.h
     hle/kernel/thread.cpp
     hle/kernel/thread.h
     hle/kernel/time_manager.cpp
@@ -235,6 +248,8 @@ add_library(core STATIC
     hle/service/am/applet_oe.h
     hle/service/am/applets/applets.cpp
     hle/service/am/applets/applets.h
+    hle/service/am/applets/controller.cpp
+    hle/service/am/applets/controller.h
     hle/service/am/applets/error.cpp
     hle/service/am/applets/error.h
     hle/service/am/applets/general_backend.cpp
@@ -290,7 +305,6 @@ add_library(core STATIC
     hle/service/audio/hwopus.h
     hle/service/bcat/backend/backend.cpp
     hle/service/bcat/backend/backend.h
-    ${BCAT_BOXCAT_ADDITIONAL_SOURCES}
     hle/service/bcat/bcat.cpp
     hle/service/bcat/bcat.h
     hle/service/bcat/module.cpp
@@ -386,14 +400,15 @@ add_library(core STATIC
     hle/service/ldr/ldr.h
     hle/service/lm/lm.cpp
     hle/service/lm/lm.h
-    hle/service/lm/manager.cpp
-    hle/service/lm/manager.h
     hle/service/mig/mig.cpp
     hle/service/mig/mig.h
+    hle/service/mii/manager.cpp
+    hle/service/mii/manager.h
     hle/service/mii/mii.cpp
     hle/service/mii/mii.h
-    hle/service/mii/mii_manager.cpp
-    hle/service/mii/mii_manager.h
+    hle/service/mii/raw_data.cpp
+    hle/service/mii/raw_data.h
+    hle/service/mii/types.h
     hle/service/mm/mm_u.cpp
     hle/service/mm/mm_u.h
     hle/service/ncm/ncm.cpp
@@ -430,6 +445,8 @@ add_library(core STATIC
     hle/service/nvdrv/devices/nvhost_gpu.h
     hle/service/nvdrv/devices/nvhost_nvdec.cpp
     hle/service/nvdrv/devices/nvhost_nvdec.h
+    hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+    hle/service/nvdrv/devices/nvhost_nvdec_common.h
     hle/service/nvdrv/devices/nvhost_nvjpg.cpp
     hle/service/nvdrv/devices/nvhost_nvjpg.h
     hle/service/nvdrv/devices/nvhost_vic.cpp
@@ -443,10 +460,14 @@ add_library(core STATIC
     hle/service/nvdrv/nvdrv.h
     hle/service/nvdrv/nvmemp.cpp
     hle/service/nvdrv/nvmemp.h
+    hle/service/nvdrv/syncpoint_manager.cpp
+    hle/service/nvdrv/syncpoint_manager.h
     hle/service/nvflinger/buffer_queue.cpp
     hle/service/nvflinger/buffer_queue.h
     hle/service/nvflinger/nvflinger.cpp
     hle/service/nvflinger/nvflinger.h
+    hle/service/olsc/olsc.cpp
+    hle/service/olsc/olsc.h
     hle/service/pcie/pcie.cpp
     hle/service/pcie/pcie.h
     hle/service/pctl/module.cpp
@@ -489,6 +510,8 @@ add_library(core STATIC
     hle/service/sockets/sfdnsres.h
     hle/service/sockets/sockets.cpp
     hle/service/sockets/sockets.h
+    hle/service/sockets/sockets_translate.cpp
+    hle/service/sockets/sockets_translate.h
     hle/service/spl/csrng.cpp
     hle/service/spl/csrng.h
     hle/service/spl/module.cpp
@@ -574,6 +597,9 @@ add_library(core STATIC
     memory/dmnt_cheat_vm.h
     memory.cpp
     memory.h
+    network/network.cpp
+    network/network.h
+    network/sockets.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp
@@ -585,6 +611,13 @@ add_library(core STATIC
     tools/freezer.cpp
     tools/freezer.h
 )
+
+if (YUZU_ENABLE_BOXCAT)
+    target_sources(core PRIVATE
+        hle/service/bcat/backend/boxcat.cpp
+        hle/service/bcat/backend/boxcat.h
+    )
+endif()
 
 if (MSVC)
     target_compile_options(core PRIVATE
@@ -600,17 +633,32 @@ if (MSVC)
         /we4267
         # 'context' : truncation from 'type1' to 'type2'
         /we4305
+        # 'function' : not all control paths return a value
+        /we4715
+    )
+else()
+    target_compile_options(core PRIVATE
+        -Werror=conversion
+        -Werror=ignored-qualifiers
+        -Werror=implicit-fallthrough
+        -Werror=sign-compare
+
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=class-memaccess>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-parameter>
+        $<$<CXX_COMPILER_ID:GNU>:-Werror=unused-but-set-variable>
+
+        -Wno-sign-conversion
     )
 endif()
 
 create_target_directory_groups(core)
 
 target_link_libraries(core PUBLIC common PRIVATE audio_core video_core)
-target_link_libraries(core PUBLIC Boost::boost PRIVATE fmt::fmt nlohmann_json::nlohmann_json mbedtls Opus::Opus unicorn)
+target_link_libraries(core PUBLIC Boost::boost PRIVATE fmt::fmt nlohmann_json::nlohmann_json mbedtls opus zip)
 
 if (YUZU_ENABLE_BOXCAT)
     target_compile_definitions(core PRIVATE -DYUZU_ENABLE_BOXCAT)
-    target_link_libraries(core PRIVATE httplib nlohmann_json::nlohmann_json zip)
+    target_link_libraries(core PRIVATE httplib nlohmann_json::nlohmann_json)
 endif()
 
 if (ENABLE_WEB_SERVICE)

@@ -5,14 +5,16 @@
 #pragma once
 
 #include <memory>
-#include <tuple>
 
-#include "video_core/renderer_vulkan/vk_memory_manager.h"
-#include "video_core/renderer_vulkan/vk_resource_manager.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/vulkan_common/vulkan_memory_allocator.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Core {
 class System;
+}
+
+namespace Core::Memory {
+class Memory;
 }
 
 namespace Core::Frontend {
@@ -30,26 +32,25 @@ class RasterizerInterface;
 namespace Vulkan {
 
 struct ScreenInfo;
+
+class Device;
 class RasterizerVulkan;
-class VKDevice;
-class VKFence;
-class VKImage;
 class VKScheduler;
 class VKSwapchain;
 
 class VKBlitScreen final {
 public:
-    explicit VKBlitScreen(Core::System& system, Core::Frontend::EmuWindow& render_window,
-                          VideoCore::RasterizerInterface& rasterizer, const VKDevice& device,
-                          VKResourceManager& resource_manager, VKMemoryManager& memory_manager,
-                          VKSwapchain& swapchain, VKScheduler& scheduler,
-                          const VKScreenInfo& screen_info);
+    explicit VKBlitScreen(Core::Memory::Memory& cpu_memory,
+                          Core::Frontend::EmuWindow& render_window,
+                          VideoCore::RasterizerInterface& rasterizer, const Device& device,
+                          MemoryAllocator& memory_allocator, VKSwapchain& swapchain,
+                          VKScheduler& scheduler, const VKScreenInfo& screen_info);
     ~VKBlitScreen();
 
     void Recreate();
 
-    std::tuple<VKFence&, VkSemaphore> Draw(const Tegra::FramebufferConfig& framebuffer,
-                                           bool use_accelerated);
+    [[nodiscard]] VkSemaphore Draw(const Tegra::FramebufferConfig& framebuffer,
+                                   bool use_accelerated);
 
 private:
     struct BufferData;
@@ -81,12 +82,11 @@ private:
     u64 GetRawImageOffset(const Tegra::FramebufferConfig& framebuffer,
                           std::size_t image_index) const;
 
-    Core::System& system;
+    Core::Memory::Memory& cpu_memory;
     Core::Frontend::EmuWindow& render_window;
     VideoCore::RasterizerInterface& rasterizer;
-    const VKDevice& device;
-    VKResourceManager& resource_manager;
-    VKMemoryManager& memory_manager;
+    const Device& device;
+    MemoryAllocator& memory_allocator;
     VKSwapchain& swapchain;
     VKScheduler& scheduler;
     const std::size_t image_count;
@@ -104,13 +104,14 @@ private:
     vk::Sampler sampler;
 
     vk::Buffer buffer;
-    VKMemoryCommit buffer_commit;
+    MemoryCommit buffer_commit;
 
-    std::vector<std::unique_ptr<VKFenceWatch>> watches;
+    std::vector<u64> resource_ticks;
 
     std::vector<vk::Semaphore> semaphores;
-    std::vector<std::unique_ptr<VKImage>> raw_images;
-    std::vector<VKMemoryCommit> raw_buffer_commits;
+    std::vector<vk::Image> raw_images;
+    std::vector<vk::ImageView> raw_image_views;
+    std::vector<MemoryCommit> raw_buffer_commits;
     u32 raw_width = 0;
     u32 raw_height = 0;
 };

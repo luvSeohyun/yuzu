@@ -48,7 +48,7 @@ private:
 
 MicroProfileDialog::MicroProfileDialog(QWidget* parent) : QWidget(parent, Qt::Dialog) {
     setObjectName(QStringLiteral("MicroProfile"));
-    setWindowTitle(tr("MicroProfile"));
+    setWindowTitle(tr("&MicroProfile"));
     resize(1000, 600);
     // Remove the "?" button from the titlebar and enable the maximize button
     setWindowFlags((windowFlags() & ~Qt::WindowContextHelpButtonHint) |
@@ -109,8 +109,7 @@ MicroProfileWidget::MicroProfileWidget(QWidget* parent) : QWidget(parent) {
     MicroProfileSetDisplayMode(1); // Timers screen
     MicroProfileInitUI();
 
-    connect(&update_timer, &QTimer::timeout, this,
-            static_cast<void (MicroProfileWidget::*)()>(&MicroProfileWidget::update));
+    connect(&update_timer, &QTimer::timeout, this, qOverload<>(&MicroProfileWidget::update));
 }
 
 void MicroProfileWidget::paintEvent(QPaintEvent* ev) {

@@ -28,8 +28,8 @@ namespace VideoCommon {
 template <class QueryCache, class HostCounter>
 class CounterStreamBase {
 public:
-    explicit CounterStreamBase(QueryCache& cache, VideoCore::QueryType type)
-        : cache{cache}, type{type} {}
+    explicit CounterStreamBase(QueryCache& cache_, VideoCore::QueryType type_)
+        : cache{cache_}, type{type_} {}
 
     /// Updates the state of the stream, enabling or disabling as needed.
     void Update(bool enabled) {
@@ -91,14 +91,15 @@ private:
     std::shared_ptr<HostCounter> last;
 };
 
-template <class QueryCache, class CachedQuery, class CounterStream, class HostCounter,
-          class QueryPool>
+template <class QueryCache, class CachedQuery, class CounterStream, class HostCounter>
 class QueryCacheBase {
 public:
-    explicit QueryCacheBase(Core::System& system, VideoCore::RasterizerInterface& rasterizer)
-        : system{system}, rasterizer{rasterizer}, streams{{CounterStream{
-                                                      static_cast<QueryCache&>(*this),
-                                                      VideoCore::QueryType::SamplesPassed}}} {}
+    explicit QueryCacheBase(VideoCore::RasterizerInterface& rasterizer_,
+                            Tegra::Engines::Maxwell3D& maxwell3d_,
+                            Tegra::MemoryManager& gpu_memory_)
+        : rasterizer{rasterizer_}, maxwell3d{maxwell3d_},
+          gpu_memory{gpu_memory_}, streams{{CounterStream{static_cast<QueryCache&>(*this),
+                                                          VideoCore::QueryType::SamplesPassed}}} {}
 
     void InvalidateRegion(VAddr addr, std::size_t size) {
         std::unique_lock lock{mutex};
@@ -118,29 +119,27 @@ public:
      */
     void Query(GPUVAddr gpu_addr, VideoCore::QueryType type, std::optional<u64> timestamp) {
         std::unique_lock lock{mutex};
-        auto& memory_manager = system.GPU().MemoryManager();
-        const std::optional<VAddr> cpu_addr_opt = memory_manager.GpuToCpuAddress(gpu_addr);
-        ASSERT(cpu_addr_opt);
-        VAddr cpu_addr = *cpu_addr_opt;
+        const std::optional<VAddr> cpu_addr = gpu_memory.GpuToCpuAddress(gpu_addr);
+        ASSERT(cpu_addr);
 
-        CachedQuery* query = TryGet(cpu_addr);
+        CachedQuery* query = TryGet(*cpu_addr);
         if (!query) {
-            ASSERT_OR_EXECUTE(cpu_addr_opt, return;);
-            const auto host_ptr = memory_manager.GetPointer(gpu_addr);
+            ASSERT_OR_EXECUTE(cpu_addr, return;);
+            u8* const host_ptr = gpu_memory.GetPointer(gpu_addr);
 
-            query = Register(type, cpu_addr, host_ptr, timestamp.has_value());
+            query = Register(type, *cpu_addr, host_ptr, timestamp.has_value());
         }
 
         query->BindCounter(Stream(type).Current(), timestamp);
-        if (Settings::values.use_asynchronous_gpu_emulation) {
-            AsyncFlushQuery(cpu_addr);
+        if (Settings::values.use_asynchronous_gpu_emulation.GetValue()) {
+            AsyncFlushQuery(*cpu_addr);
         }
     }
 
     /// Updates counters from GPU state. Expected to be called once per draw, clear or dispatch.
     void UpdateCounters() {
         std::unique_lock lock{mutex};
-        const auto& regs = system.GPU().Maxwell3D().regs;
+        const auto& regs = maxwell3d.regs;
         Stream(VideoCore::QueryType::SamplesPassed).Update(regs.samplecnt_enable);
     }
 
@@ -206,9 +205,6 @@ public:
         committed_flushes.pop_front();
     }
 
-protected:
-    std::array<QueryPool, VideoCore::NumQueryTypes> query_pools;
-
 private:
     /// Flushes a memory range to guest memory and removes it from the cache.
     void FlushAndRemoveRegion(VAddr addr, std::size_t size) {
@@ -220,8 +216,8 @@ private:
             return cache_begin < addr_end && addr_begin < cache_end;
         };
 
-        const u64 page_end = addr_end >> PAGE_SHIFT;
-        for (u64 page = addr_begin >> PAGE_SHIFT; page <= page_end; ++page) {
+        const u64 page_end = addr_end >> PAGE_BITS;
+        for (u64 page = addr_begin >> PAGE_BITS; page <= page_end; ++page) {
             const auto& it = cached_queries.find(page);
             if (it == std::end(cached_queries)) {
                 continue;
@@ -242,14 +238,14 @@ private:
     /// Registers the passed parameters as cached and returns a pointer to the stored cached query.
     CachedQuery* Register(VideoCore::QueryType type, VAddr cpu_addr, u8* host_ptr, bool timestamp) {
         rasterizer.UpdatePagesCachedCount(cpu_addr, CachedQuery::SizeInBytes(timestamp), 1);
-        const u64 page = static_cast<u64>(cpu_addr) >> PAGE_SHIFT;
+        const u64 page = static_cast<u64>(cpu_addr) >> PAGE_BITS;
         return &cached_queries[page].emplace_back(static_cast<QueryCache&>(*this), type, cpu_addr,
                                                   host_ptr);
     }
 
     /// Tries to a get a cached query. Returns nullptr on failure.
     CachedQuery* TryGet(VAddr addr) {
-        const u64 page = static_cast<u64>(addr) >> PAGE_SHIFT;
+        const u64 page = static_cast<u64>(addr) >> PAGE_BITS;
         const auto it = cached_queries.find(page);
         if (it == std::end(cached_queries)) {
             return nullptr;
@@ -268,10 +264,11 @@ private:
     }
 
     static constexpr std::uintptr_t PAGE_SIZE = 4096;
-    static constexpr unsigned PAGE_SHIFT = 12;
+    static constexpr unsigned PAGE_BITS = 12;
 
-    Core::System& system;
     VideoCore::RasterizerInterface& rasterizer;
+    Tegra::Engines::Maxwell3D& maxwell3d;
+    Tegra::MemoryManager& gpu_memory;
 
     std::recursive_mutex mutex;
 
@@ -337,8 +334,8 @@ private:
 template <class HostCounter>
 class CachedQueryBase {
 public:
-    explicit CachedQueryBase(VAddr cpu_addr, u8* host_ptr)
-        : cpu_addr{cpu_addr}, host_ptr{host_ptr} {}
+    explicit CachedQueryBase(VAddr cpu_addr_, u8* host_ptr_)
+        : cpu_addr{cpu_addr_}, host_ptr{host_ptr_} {}
     virtual ~CachedQueryBase() = default;
 
     CachedQueryBase(CachedQueryBase&&) noexcept = default;

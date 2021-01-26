@@ -16,14 +16,23 @@
 
 namespace Core {
 class System;
-}
+class TelemetrySession;
+} // namespace Core
 
 namespace Core::Frontend {
 class EmuWindow;
 }
 
+namespace Core::Memory {
+class Memory;
+}
+
 namespace Layout {
 struct FramebufferLayout;
+}
+
+namespace Tegra {
+class GPU;
 }
 
 namespace OpenGL {
@@ -46,24 +55,17 @@ struct ScreenInfo {
     TextureInfo texture;
 };
 
-struct PresentationTexture {
-    u32 width = 0;
-    u32 height = 0;
-    OGLTexture texture;
-};
-
-class FrameMailbox;
-
 class RendererOpenGL final : public VideoCore::RendererBase {
 public:
-    explicit RendererOpenGL(Core::Frontend::EmuWindow& emu_window, Core::System& system,
-                            Core::Frontend::GraphicsContext& context);
+    explicit RendererOpenGL(Core::TelemetrySession& telemetry_session_,
+                            Core::Frontend::EmuWindow& emu_window_,
+                            Core::Memory::Memory& cpu_memory_, Tegra::GPU& gpu_,
+                            std::unique_ptr<Core::Frontend::GraphicsContext> context_);
     ~RendererOpenGL() override;
 
     bool Init() override;
     void ShutDown() override;
     void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) override;
-    bool TryPresent(int timeout_ms) override;
 
 private:
     /// Initializes the OpenGL state and creates persistent objects.
@@ -91,21 +93,24 @@ private:
 
     void PrepareRendertarget(const Tegra::FramebufferConfig* framebuffer);
 
-    bool Present(int timeout_ms);
-
+    Core::TelemetrySession& telemetry_session;
     Core::Frontend::EmuWindow& emu_window;
-    Core::System& system;
-    Core::Frontend::GraphicsContext& context;
-    const Device device;
+    Core::Memory::Memory& cpu_memory;
+    Tegra::GPU& gpu;
 
-    StateTracker state_tracker{system};
+    const Device device;
+    StateTracker state_tracker{gpu};
 
     // OpenGL object IDs
+    OGLSampler present_sampler;
     OGLBuffer vertex_buffer;
     OGLProgram vertex_program;
     OGLProgram fragment_program;
     OGLPipeline pipeline;
     OGLFramebuffer screenshot_framebuffer;
+
+    // GPU address of the vertex buffer
+    GLuint64EXT vertex_buffer_address = 0;
 
     /// Display information for Switch screen
     ScreenInfo screen_info;
@@ -117,13 +122,8 @@ private:
     std::vector<u8> gl_framebuffer_data;
 
     /// Used for transforming the framebuffer orientation
-    Tegra::FramebufferConfig::TransformFlags framebuffer_transform_flags;
+    Tegra::FramebufferConfig::TransformFlags framebuffer_transform_flags{};
     Common::Rectangle<int> framebuffer_crop_rect;
-
-    /// Frame presentation mailbox
-    std::unique_ptr<FrameMailbox> frame_mailbox;
-
-    bool has_debug_tool = false;
 };
 
 } // namespace OpenGL

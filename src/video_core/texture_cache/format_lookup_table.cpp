@@ -2,7 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <array>
 #include "common/common_types.h"
 #include "common/logging/log.h"
 #include "video_core/texture_cache/format_lookup_table.h"
@@ -19,193 +18,208 @@ constexpr auto SNORM = ComponentType::SNORM;
 constexpr auto UNORM = ComponentType::UNORM;
 constexpr auto SINT = ComponentType::SINT;
 constexpr auto UINT = ComponentType::UINT;
-constexpr auto SNORM_FORCE_FP16 = ComponentType::SNORM_FORCE_FP16;
-constexpr auto UNORM_FORCE_FP16 = ComponentType::UNORM_FORCE_FP16;
 constexpr auto FLOAT = ComponentType::FLOAT;
-constexpr bool C = false; // Normal color
-constexpr bool S = true;  // Srgb
+constexpr bool LINEAR = false;
+constexpr bool SRGB = true;
 
-struct Table {
-    constexpr Table(TextureFormat texture_format, bool is_srgb, ComponentType red_component,
-                    ComponentType green_component, ComponentType blue_component,
-                    ComponentType alpha_component, PixelFormat pixel_format)
-        : texture_format{texture_format}, pixel_format{pixel_format}, red_component{red_component},
-          green_component{green_component}, blue_component{blue_component},
-          alpha_component{alpha_component}, is_srgb{is_srgb} {}
+constexpr u32 Hash(TextureFormat format, ComponentType red_component, ComponentType green_component,
+                   ComponentType blue_component, ComponentType alpha_component, bool is_srgb) {
+    u32 hash = is_srgb ? 1 : 0;
+    hash |= static_cast<u32>(red_component) << 1;
+    hash |= static_cast<u32>(green_component) << 4;
+    hash |= static_cast<u32>(blue_component) << 7;
+    hash |= static_cast<u32>(alpha_component) << 10;
+    hash |= static_cast<u32>(format) << 13;
+    return hash;
+}
 
-    TextureFormat texture_format;
-    PixelFormat pixel_format;
-    ComponentType red_component;
-    ComponentType green_component;
-    ComponentType blue_component;
-    ComponentType alpha_component;
-    bool is_srgb;
-};
-constexpr std::array<Table, 77> DefinitionTable = {{
-    {TextureFormat::A8R8G8B8, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ABGR8U},
-    {TextureFormat::A8R8G8B8, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::ABGR8S},
-    {TextureFormat::A8R8G8B8, C, UINT, UINT, UINT, UINT, PixelFormat::ABGR8UI},
-    {TextureFormat::A8R8G8B8, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::RGBA8_SRGB},
-
-    {TextureFormat::B5G6R5, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::B5G6R5U},
-
-    {TextureFormat::A2B10G10R10, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::A2B10G10R10U},
-
-    {TextureFormat::A1B5G5R5, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::A1B5G5R5U},
-
-    {TextureFormat::A4B4G4R4, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::R4G4B4A4U},
-
-    {TextureFormat::R8, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::R8U},
-    {TextureFormat::R8, C, UINT, UINT, UINT, UINT, PixelFormat::R8UI},
-
-    {TextureFormat::G8R8, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::RG8U},
-    {TextureFormat::G8R8, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::RG8S},
-    {TextureFormat::G8R8, C, UINT, UINT, UINT, UINT, PixelFormat::RG8UI},
-
-    {TextureFormat::R16_G16_B16_A16, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::RGBA16S},
-    {TextureFormat::R16_G16_B16_A16, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::RGBA16U},
-    {TextureFormat::R16_G16_B16_A16, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::RGBA16F},
-    {TextureFormat::R16_G16_B16_A16, C, UINT, UINT, UINT, UINT, PixelFormat::RGBA16UI},
-
-    {TextureFormat::R16_G16, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::RG16F},
-    {TextureFormat::R16_G16, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::RG16},
-    {TextureFormat::R16_G16, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::RG16S},
-    {TextureFormat::R16_G16, C, UINT, UINT, UINT, UINT, PixelFormat::RG16UI},
-    {TextureFormat::R16_G16, C, SINT, SINT, SINT, SINT, PixelFormat::RG16I},
-
-    {TextureFormat::R16, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::R16F},
-    {TextureFormat::R16, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::R16U},
-    {TextureFormat::R16, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::R16S},
-    {TextureFormat::R16, C, UINT, UINT, UINT, UINT, PixelFormat::R16UI},
-    {TextureFormat::R16, C, SINT, SINT, SINT, SINT, PixelFormat::R16I},
-
-    {TextureFormat::BF10GF11RF11, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::R11FG11FB10F},
-
-    {TextureFormat::R32_G32_B32_A32, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::RGBA32F},
-    {TextureFormat::R32_G32_B32_A32, C, UINT, UINT, UINT, UINT, PixelFormat::RGBA32UI},
-
-    {TextureFormat::R32_G32_B32, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::RGB32F},
-
-    {TextureFormat::R32_G32, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::RG32F},
-    {TextureFormat::R32_G32, C, UINT, UINT, UINT, UINT, PixelFormat::RG32UI},
-
-    {TextureFormat::R32, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::R32F},
-    {TextureFormat::R32, C, UINT, UINT, UINT, UINT, PixelFormat::R32UI},
-    {TextureFormat::R32, C, SINT, SINT, SINT, SINT, PixelFormat::R32I},
-
-    {TextureFormat::E5B9G9R9_SHAREDEXP, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::E5B9G9R9F},
-
-    {TextureFormat::ZF32, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::Z32F},
-    {TextureFormat::Z16, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::Z16},
-    {TextureFormat::S8Z24, C, UINT, UNORM, UNORM, UNORM, PixelFormat::S8Z24},
-    {TextureFormat::ZF32_X24S8, C, FLOAT, UINT, UNORM, UNORM, PixelFormat::Z32FS8},
-
-    {TextureFormat::DXT1, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT1},
-    {TextureFormat::DXT1, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT1_SRGB},
-
-    {TextureFormat::DXT23, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT23},
-    {TextureFormat::DXT23, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT23_SRGB},
-
-    {TextureFormat::DXT45, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT45},
-    {TextureFormat::DXT45, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXT45_SRGB},
-
-    // TODO: Use a different pixel format for SNORM
-    {TextureFormat::DXN1, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXN1},
-    {TextureFormat::DXN1, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::DXN1},
-
-    {TextureFormat::DXN2, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::DXN2UNORM},
-    {TextureFormat::DXN2, C, SNORM, SNORM, SNORM, SNORM, PixelFormat::DXN2SNORM},
-
-    {TextureFormat::BC7U, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::BC7U},
-    {TextureFormat::BC7U, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::BC7U_SRGB},
-
-    {TextureFormat::BC6H_SF16, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::BC6H_SF16},
-    {TextureFormat::BC6H_UF16, C, FLOAT, FLOAT, FLOAT, FLOAT, PixelFormat::BC6H_UF16},
-
-    {TextureFormat::ASTC_2D_4X4, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_4X4},
-    {TextureFormat::ASTC_2D_4X4, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_4X4_SRGB},
-
-    {TextureFormat::ASTC_2D_5X4, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_5X4},
-    {TextureFormat::ASTC_2D_5X4, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_5X4_SRGB},
-
-    {TextureFormat::ASTC_2D_5X5, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_5X5},
-    {TextureFormat::ASTC_2D_5X5, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_5X5_SRGB},
-
-    {TextureFormat::ASTC_2D_8X8, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X8},
-    {TextureFormat::ASTC_2D_8X8, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X8_SRGB},
-
-    {TextureFormat::ASTC_2D_8X5, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X5},
-    {TextureFormat::ASTC_2D_8X5, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X5_SRGB},
-
-    {TextureFormat::ASTC_2D_10X8, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_10X8},
-    {TextureFormat::ASTC_2D_10X8, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_10X8_SRGB},
-
-    {TextureFormat::ASTC_2D_6X6, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_6X6},
-    {TextureFormat::ASTC_2D_6X6, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_6X6_SRGB},
-
-    {TextureFormat::ASTC_2D_10X10, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_10X10},
-    {TextureFormat::ASTC_2D_10X10, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_10X10_SRGB},
-
-    {TextureFormat::ASTC_2D_12X12, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_12X12},
-    {TextureFormat::ASTC_2D_12X12, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_12X12_SRGB},
-
-    {TextureFormat::ASTC_2D_8X6, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X6},
-    {TextureFormat::ASTC_2D_8X6, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_8X6_SRGB},
-
-    {TextureFormat::ASTC_2D_6X5, C, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_6X5},
-    {TextureFormat::ASTC_2D_6X5, S, UNORM, UNORM, UNORM, UNORM, PixelFormat::ASTC_2D_6X5_SRGB},
-}};
+constexpr u32 Hash(TextureFormat format, ComponentType component, bool is_srgb = LINEAR) {
+    return Hash(format, component, component, component, component, is_srgb);
+}
 
 } // Anonymous namespace
 
-FormatLookupTable::FormatLookupTable() {
-    table.fill(static_cast<u8>(PixelFormat::Invalid));
-
-    for (const auto& entry : DefinitionTable) {
-        table[CalculateIndex(entry.texture_format, entry.is_srgb != 0, entry.red_component,
-                             entry.green_component, entry.blue_component, entry.alpha_component)] =
-            static_cast<u8>(entry.pixel_format);
-    }
-}
-
-PixelFormat FormatLookupTable::GetPixelFormat(TextureFormat format, bool is_srgb,
-                                              ComponentType red_component,
-                                              ComponentType green_component,
-                                              ComponentType blue_component,
-                                              ComponentType alpha_component) const noexcept {
-    const auto pixel_format = static_cast<PixelFormat>(table[CalculateIndex(
-        format, is_srgb, red_component, green_component, blue_component, alpha_component)]);
-    // [[likely]]
-    if (pixel_format != PixelFormat::Invalid) {
-        return pixel_format;
+PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, ComponentType green,
+                                       ComponentType blue, ComponentType alpha,
+                                       bool is_srgb) noexcept {
+    switch (Hash(format, red, green, blue, alpha, is_srgb)) {
+    case Hash(TextureFormat::A8R8G8B8, UNORM):
+        return PixelFormat::A8B8G8R8_UNORM;
+    case Hash(TextureFormat::A8R8G8B8, SNORM):
+        return PixelFormat::A8B8G8R8_SNORM;
+    case Hash(TextureFormat::A8R8G8B8, UINT):
+        return PixelFormat::A8B8G8R8_UINT;
+    case Hash(TextureFormat::A8R8G8B8, SINT):
+        return PixelFormat::A8B8G8R8_SINT;
+    case Hash(TextureFormat::A8R8G8B8, UNORM, SRGB):
+        return PixelFormat::A8B8G8R8_SRGB;
+    case Hash(TextureFormat::B5G6R5, UNORM):
+        return PixelFormat::B5G6R5_UNORM;
+    case Hash(TextureFormat::A2B10G10R10, UNORM):
+        return PixelFormat::A2B10G10R10_UNORM;
+    case Hash(TextureFormat::A2B10G10R10, UINT):
+        return PixelFormat::A2B10G10R10_UINT;
+    case Hash(TextureFormat::A1B5G5R5, UNORM):
+        return PixelFormat::A1B5G5R5_UNORM;
+    case Hash(TextureFormat::A4B4G4R4, UNORM):
+        return PixelFormat::A4B4G4R4_UNORM;
+    case Hash(TextureFormat::R8, UNORM):
+        return PixelFormat::R8_UNORM;
+    case Hash(TextureFormat::R8, SNORM):
+        return PixelFormat::R8_SNORM;
+    case Hash(TextureFormat::R8, UINT):
+        return PixelFormat::R8_UINT;
+    case Hash(TextureFormat::R8, SINT):
+        return PixelFormat::R8_SINT;
+    case Hash(TextureFormat::R8G8, UNORM):
+        return PixelFormat::R8G8_UNORM;
+    case Hash(TextureFormat::R8G8, SNORM):
+        return PixelFormat::R8G8_SNORM;
+    case Hash(TextureFormat::R8G8, UINT):
+        return PixelFormat::R8G8_UINT;
+    case Hash(TextureFormat::R8G8, SINT):
+        return PixelFormat::R8G8_SINT;
+    case Hash(TextureFormat::R16G16B16A16, FLOAT):
+        return PixelFormat::R16G16B16A16_FLOAT;
+    case Hash(TextureFormat::R16G16B16A16, UNORM):
+        return PixelFormat::R16G16B16A16_UNORM;
+    case Hash(TextureFormat::R16G16B16A16, SNORM):
+        return PixelFormat::R16G16B16A16_SNORM;
+    case Hash(TextureFormat::R16G16B16A16, UINT):
+        return PixelFormat::R16G16B16A16_UINT;
+    case Hash(TextureFormat::R16G16B16A16, SINT):
+        return PixelFormat::R16G16B16A16_SINT;
+    case Hash(TextureFormat::R16G16, FLOAT):
+        return PixelFormat::R16G16_FLOAT;
+    case Hash(TextureFormat::R16G16, UNORM):
+        return PixelFormat::R16G16_UNORM;
+    case Hash(TextureFormat::R16G16, SNORM):
+        return PixelFormat::R16G16_SNORM;
+    case Hash(TextureFormat::R16G16, UINT):
+        return PixelFormat::R16G16_UINT;
+    case Hash(TextureFormat::R16G16, SINT):
+        return PixelFormat::R16G16_SINT;
+    case Hash(TextureFormat::R16, FLOAT):
+        return PixelFormat::R16_FLOAT;
+    case Hash(TextureFormat::R16, UNORM):
+        return PixelFormat::R16_UNORM;
+    case Hash(TextureFormat::R16, SNORM):
+        return PixelFormat::R16_SNORM;
+    case Hash(TextureFormat::R16, UINT):
+        return PixelFormat::R16_UINT;
+    case Hash(TextureFormat::R16, SINT):
+        return PixelFormat::R16_SINT;
+    case Hash(TextureFormat::B10G11R11, FLOAT):
+        return PixelFormat::B10G11R11_FLOAT;
+    case Hash(TextureFormat::R32G32B32A32, FLOAT):
+        return PixelFormat::R32G32B32A32_FLOAT;
+    case Hash(TextureFormat::R32G32B32A32, UINT):
+        return PixelFormat::R32G32B32A32_UINT;
+    case Hash(TextureFormat::R32G32B32A32, SINT):
+        return PixelFormat::R32G32B32A32_SINT;
+    case Hash(TextureFormat::R32G32B32, FLOAT):
+        return PixelFormat::R32G32B32_FLOAT;
+    case Hash(TextureFormat::R32G32, FLOAT):
+        return PixelFormat::R32G32_FLOAT;
+    case Hash(TextureFormat::R32G32, UINT):
+        return PixelFormat::R32G32_UINT;
+    case Hash(TextureFormat::R32G32, SINT):
+        return PixelFormat::R32G32_SINT;
+    case Hash(TextureFormat::R32, FLOAT):
+        return PixelFormat::R32_FLOAT;
+    case Hash(TextureFormat::R32, UINT):
+        return PixelFormat::R32_UINT;
+    case Hash(TextureFormat::R32, SINT):
+        return PixelFormat::R32_SINT;
+    case Hash(TextureFormat::E5B9G9R9, FLOAT):
+        return PixelFormat::E5B9G9R9_FLOAT;
+    case Hash(TextureFormat::D32, FLOAT):
+        return PixelFormat::D32_FLOAT;
+    case Hash(TextureFormat::D16, UNORM):
+        return PixelFormat::D16_UNORM;
+    case Hash(TextureFormat::S8D24, UINT, UNORM, UNORM, UNORM, LINEAR):
+        return PixelFormat::S8_UINT_D24_UNORM;
+    case Hash(TextureFormat::R8G24, UINT, UNORM, UNORM, UNORM, LINEAR):
+        return PixelFormat::S8_UINT_D24_UNORM;
+    case Hash(TextureFormat::D32S8, FLOAT, UINT, UNORM, UNORM, LINEAR):
+        return PixelFormat::D32_FLOAT_S8_UINT;
+    case Hash(TextureFormat::BC1_RGBA, UNORM, LINEAR):
+        return PixelFormat::BC1_RGBA_UNORM;
+    case Hash(TextureFormat::BC1_RGBA, UNORM, SRGB):
+        return PixelFormat::BC1_RGBA_SRGB;
+    case Hash(TextureFormat::BC2, UNORM, LINEAR):
+        return PixelFormat::BC2_UNORM;
+    case Hash(TextureFormat::BC2, UNORM, SRGB):
+        return PixelFormat::BC2_SRGB;
+    case Hash(TextureFormat::BC3, UNORM, LINEAR):
+        return PixelFormat::BC3_UNORM;
+    case Hash(TextureFormat::BC3, UNORM, SRGB):
+        return PixelFormat::BC3_SRGB;
+    case Hash(TextureFormat::BC4, UNORM):
+        return PixelFormat::BC4_UNORM;
+    case Hash(TextureFormat::BC4, SNORM):
+        return PixelFormat::BC4_SNORM;
+    case Hash(TextureFormat::BC5, UNORM):
+        return PixelFormat::BC5_UNORM;
+    case Hash(TextureFormat::BC5, SNORM):
+        return PixelFormat::BC5_SNORM;
+    case Hash(TextureFormat::BC7, UNORM, LINEAR):
+        return PixelFormat::BC7_UNORM;
+    case Hash(TextureFormat::BC7, UNORM, SRGB):
+        return PixelFormat::BC7_SRGB;
+    case Hash(TextureFormat::BC6H_SFLOAT, FLOAT):
+        return PixelFormat::BC6H_SFLOAT;
+    case Hash(TextureFormat::BC6H_UFLOAT, FLOAT):
+        return PixelFormat::BC6H_UFLOAT;
+    case Hash(TextureFormat::ASTC_2D_4X4, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_4X4_UNORM;
+    case Hash(TextureFormat::ASTC_2D_4X4, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_4X4_SRGB;
+    case Hash(TextureFormat::ASTC_2D_5X4, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_5X4_UNORM;
+    case Hash(TextureFormat::ASTC_2D_5X4, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_5X4_SRGB;
+    case Hash(TextureFormat::ASTC_2D_5X5, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_5X5_UNORM;
+    case Hash(TextureFormat::ASTC_2D_5X5, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_5X5_SRGB;
+    case Hash(TextureFormat::ASTC_2D_8X8, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_8X8_UNORM;
+    case Hash(TextureFormat::ASTC_2D_8X8, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_8X8_SRGB;
+    case Hash(TextureFormat::ASTC_2D_8X5, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_8X5_UNORM;
+    case Hash(TextureFormat::ASTC_2D_8X5, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_8X5_SRGB;
+    case Hash(TextureFormat::ASTC_2D_10X8, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_10X8_UNORM;
+    case Hash(TextureFormat::ASTC_2D_10X8, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_10X8_SRGB;
+    case Hash(TextureFormat::ASTC_2D_6X6, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_6X6_UNORM;
+    case Hash(TextureFormat::ASTC_2D_6X6, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_6X6_SRGB;
+    case Hash(TextureFormat::ASTC_2D_10X10, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_10X10_UNORM;
+    case Hash(TextureFormat::ASTC_2D_10X10, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_10X10_SRGB;
+    case Hash(TextureFormat::ASTC_2D_12X12, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_12X12_UNORM;
+    case Hash(TextureFormat::ASTC_2D_12X12, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_12X12_SRGB;
+    case Hash(TextureFormat::ASTC_2D_8X6, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_8X6_UNORM;
+    case Hash(TextureFormat::ASTC_2D_8X6, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_8X6_SRGB;
+    case Hash(TextureFormat::ASTC_2D_6X5, UNORM, LINEAR):
+        return PixelFormat::ASTC_2D_6X5_UNORM;
+    case Hash(TextureFormat::ASTC_2D_6X5, UNORM, SRGB):
+        return PixelFormat::ASTC_2D_6X5_SRGB;
     }
     UNIMPLEMENTED_MSG("texture format={} srgb={} components={{{} {} {} {}}}",
-                      static_cast<int>(format), is_srgb, static_cast<int>(red_component),
-                      static_cast<int>(green_component), static_cast<int>(blue_component),
-                      static_cast<int>(alpha_component));
-    return PixelFormat::ABGR8U;
-}
-
-void FormatLookupTable::Set(TextureFormat format, bool is_srgb, ComponentType red_component,
-                            ComponentType green_component, ComponentType blue_component,
-                            ComponentType alpha_component, PixelFormat pixel_format) {}
-
-std::size_t FormatLookupTable::CalculateIndex(TextureFormat format, bool is_srgb,
-                                              ComponentType red_component,
-                                              ComponentType green_component,
-                                              ComponentType blue_component,
-                                              ComponentType alpha_component) noexcept {
-    const auto format_index = static_cast<std::size_t>(format);
-    const auto red_index = static_cast<std::size_t>(red_component);
-    const auto green_index = static_cast<std::size_t>(green_component);
-    const auto blue_index = static_cast<std::size_t>(blue_component);
-    const auto alpha_index = static_cast<std::size_t>(alpha_component);
-    const std::size_t srgb_index = is_srgb ? 1 : 0;
-
-    return format_index * PerFormat +
-           srgb_index * PerComponent * PerComponent * PerComponent * PerComponent +
-           alpha_index * PerComponent * PerComponent * PerComponent +
-           blue_index * PerComponent * PerComponent + green_index * PerComponent + red_index;
+                      static_cast<int>(format), is_srgb, static_cast<int>(red),
+                      static_cast<int>(green), static_cast<int>(blue), static_cast<int>(alpha));
+    return PixelFormat::A8B8G8R8_UNORM;
 }
 
 } // namespace VideoCommon

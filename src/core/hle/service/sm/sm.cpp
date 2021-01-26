@@ -19,7 +19,7 @@ constexpr ResultCode ERR_ALREADY_REGISTERED(ErrorModule::SM, 4);
 constexpr ResultCode ERR_INVALID_NAME(ErrorModule::SM, 6);
 constexpr ResultCode ERR_SERVICE_NOT_REGISTERED(ErrorModule::SM, 7);
 
-ServiceManager::ServiceManager() = default;
+ServiceManager::ServiceManager(Kernel::KernelCore& kernel_) : kernel{kernel_} {}
 ServiceManager::~ServiceManager() = default;
 
 void ServiceManager::InvokeControlRequest(Kernel::HLERequestContext& context) {
@@ -27,29 +27,28 @@ void ServiceManager::InvokeControlRequest(Kernel::HLERequestContext& context) {
 }
 
 static ResultCode ValidateServiceName(const std::string& name) {
-    if (name.size() <= 0 || name.size() > 8) {
+    if (name.empty() || name.size() > 8) {
         LOG_ERROR(Service_SM, "Invalid service name! service={}", name);
         return ERR_INVALID_NAME;
     }
-    if (name.find('\0') != std::string::npos) {
+    if (name.rfind('\0') != std::string::npos) {
         LOG_ERROR(Service_SM, "A non null terminated service was passed");
         return ERR_INVALID_NAME;
     }
     return RESULT_SUCCESS;
 }
 
-void ServiceManager::InstallInterfaces(std::shared_ptr<ServiceManager> self,
-                                       Kernel::KernelCore& kernel) {
+void ServiceManager::InstallInterfaces(std::shared_ptr<ServiceManager> self, Core::System& system) {
     ASSERT(self->sm_interface.expired());
 
-    auto sm = std::make_shared<SM>(self, kernel);
-    sm->InstallAsNamedPort();
+    auto sm = std::make_shared<SM>(self, system);
+    sm->InstallAsNamedPort(system.Kernel());
     self->sm_interface = sm;
-    self->controller_interface = std::make_unique<Controller>();
+    self->controller_interface = std::make_unique<Controller>(system);
 }
 
-ResultVal<std::shared_ptr<Kernel::ServerPort>> ServiceManager::RegisterService(
-    std::string name, unsigned int max_sessions) {
+ResultVal<std::shared_ptr<Kernel::ServerPort>> ServiceManager::RegisterService(std::string name,
+                                                                               u32 max_sessions) {
 
     CASCADE_CODE(ValidateServiceName(name));
 
@@ -58,7 +57,6 @@ ResultVal<std::shared_ptr<Kernel::ServerPort>> ServiceManager::RegisterService(
         return ERR_ALREADY_REGISTERED;
     }
 
-    auto& kernel = Core::System::GetInstance().Kernel();
     auto [server_port, client_port] =
         Kernel::ServerPort::CreatePortPair(kernel, max_sessions, name);
 
@@ -141,9 +139,6 @@ void SM::GetService(Kernel::HLERequestContext& ctx) {
         server_port->AppendPendingSession(server);
     }
 
-    // Wake the threads waiting on the ServerPort
-    server_port->WakeupAllWaitingThreads();
-
     LOG_DEBUG(Service_SM, "called service={} -> session={}", name, client->GetObjectId());
     IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
     rb.Push(RESULT_SUCCESS);
@@ -191,8 +186,9 @@ void SM::UnregisterService(Kernel::HLERequestContext& ctx) {
     rb.Push(service_manager->UnregisterService(name));
 }
 
-SM::SM(std::shared_ptr<ServiceManager> service_manager, Kernel::KernelCore& kernel)
-    : ServiceFramework{"sm:", 4}, service_manager{std::move(service_manager)}, kernel{kernel} {
+SM::SM(std::shared_ptr<ServiceManager> service_manager_, Core::System& system_)
+    : ServiceFramework{system_, "sm:", 4},
+      service_manager{std::move(service_manager_)}, kernel{system_.Kernel()} {
     static const FunctionInfo functions[] = {
         {0x00000000, &SM::Initialize, "Initialize"},
         {0x00000001, &SM::GetService, "GetService"},

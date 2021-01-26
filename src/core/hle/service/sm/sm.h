@@ -9,11 +9,16 @@
 #include <type_traits>
 #include <unordered_map>
 
+#include "common/concepts.h"
 #include "core/hle/kernel/client_port.h"
 #include "core/hle/kernel/object.h"
 #include "core/hle/kernel/server_port.h"
 #include "core/hle/result.h"
 #include "core/hle/service/service.h"
+
+namespace Core {
+class System;
+}
 
 namespace Kernel {
 class ClientPort;
@@ -30,7 +35,7 @@ class Controller;
 /// Interface to "sm:" service
 class SM final : public ServiceFramework<SM> {
 public:
-    explicit SM(std::shared_ptr<ServiceManager> service_manager, Kernel::KernelCore& kernel);
+    explicit SM(std::shared_ptr<ServiceManager> service_manager_, Core::System& system_);
     ~SM() override;
 
 private:
@@ -45,21 +50,19 @@ private:
 
 class ServiceManager {
 public:
-    static void InstallInterfaces(std::shared_ptr<ServiceManager> self, Kernel::KernelCore& kernel);
+    static void InstallInterfaces(std::shared_ptr<ServiceManager> self, Core::System& system);
 
-    ServiceManager();
+    explicit ServiceManager(Kernel::KernelCore& kernel_);
     ~ServiceManager();
 
     ResultVal<std::shared_ptr<Kernel::ServerPort>> RegisterService(std::string name,
-                                                                   unsigned int max_sessions);
+                                                                   u32 max_sessions);
     ResultCode UnregisterService(const std::string& name);
     ResultVal<std::shared_ptr<Kernel::ClientPort>> GetServicePort(const std::string& name);
     ResultVal<std::shared_ptr<Kernel::ClientSession>> ConnectToService(const std::string& name);
 
-    template <typename T>
+    template <Common::DerivedFrom<Kernel::SessionRequestHandler> T>
     std::shared_ptr<T> GetService(const std::string& service_name) const {
-        static_assert(std::is_base_of_v<Kernel::SessionRequestHandler, T>,
-                      "Not a base of ServiceFrameworkBase");
         auto service = registered_services.find(service_name);
         if (service == registered_services.end()) {
             LOG_DEBUG(Service, "Can't find service: {}", service_name);
@@ -80,6 +83,9 @@ private:
 
     /// Map of registered services, retrieved using GetServicePort or ConnectToService.
     std::unordered_map<std::string, std::shared_ptr<Kernel::ClientPort>> registered_services;
+
+    /// Kernel context
+    Kernel::KernelCore& kernel;
 };
 
 } // namespace Service::SM

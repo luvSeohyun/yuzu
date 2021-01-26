@@ -39,12 +39,12 @@ QString GetGameListCachedObject(const std::string& filename, const std::string& 
         return generator();
     }
 
-    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::CacheDir) + DIR_SEP + "game_list" +
-                      DIR_SEP + filename + '.' + ext;
+    const auto path = Common::FS::GetUserPath(Common::FS::UserPath::CacheDir) + DIR_SEP +
+                      "game_list" + DIR_SEP + filename + '.' + ext;
 
-    FileUtil::CreateFullPath(path);
+    Common::FS::CreateFullPath(path);
 
-    if (!FileUtil::Exists(path)) {
+    if (!Common::FS::Exists(path)) {
         const auto str = generator();
 
         QFile file{QString::fromStdString(path)};
@@ -70,14 +70,14 @@ std::pair<std::vector<u8>, std::string> GetGameListCachedObject(
         return generator();
     }
 
-    const auto path1 = FileUtil::GetUserPath(FileUtil::UserPath::CacheDir) + DIR_SEP + "game_list" +
-                       DIR_SEP + filename + ".jpeg";
-    const auto path2 = FileUtil::GetUserPath(FileUtil::UserPath::CacheDir) + DIR_SEP + "game_list" +
-                       DIR_SEP + filename + ".appname.txt";
+    const auto path1 = Common::FS::GetUserPath(Common::FS::UserPath::CacheDir) + DIR_SEP +
+                       "game_list" + DIR_SEP + filename + ".jpeg";
+    const auto path2 = Common::FS::GetUserPath(Common::FS::UserPath::CacheDir) + DIR_SEP +
+                       "game_list" + DIR_SEP + filename + ".appname.txt";
 
-    FileUtil::CreateFullPath(path1);
+    Common::FS::CreateFullPath(path1);
 
-    if (!FileUtil::Exists(path1) || !FileUtil::Exists(path2)) {
+    if (!Common::FS::Exists(path1) || !Common::FS::Exists(path2)) {
         const auto [icon, nacp] = generator();
 
         QFile file1{QString::fromStdString(path1)};
@@ -208,7 +208,7 @@ QList<QStandardItem*> MakeGameListEntry(const std::string& path, const std::stri
                              file_type_string, program_id),
         new GameListItemCompat(compatibility),
         new GameListItem(file_type_string),
-        new GameListItemSize(FileUtil::GetSize(path)),
+        new GameListItemSize(Common::FS::GetSize(path)),
     };
 
     if (UISettings::values.show_add_ons) {
@@ -235,12 +235,11 @@ GameListWorker::~GameListWorker() = default;
 void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
     using namespace FileSys;
 
-    const auto& cache =
-        dynamic_cast<ContentProviderUnion&>(Core::System::GetInstance().GetContentProvider());
+    auto& system = Core::System::GetInstance();
+    const auto& cache = dynamic_cast<ContentProviderUnion&>(system.GetContentProvider());
 
-    std::vector<std::pair<ContentProviderUnionSlot, ContentProviderEntry>> installed_games;
-    installed_games = cache.ListEntriesFilterOrigin(std::nullopt, TitleType::Application,
-                                                    ContentRecordType::Program);
+    auto installed_games = cache.ListEntriesFilterOrigin(std::nullopt, TitleType::Application,
+                                                         ContentRecordType::Program);
 
     if (parent_dir->type() == static_cast<int>(GameListItemType::SdmcDir)) {
         installed_games = cache.ListEntriesFilterOrigin(
@@ -254,23 +253,27 @@ void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
     }
 
     for (const auto& [slot, game] : installed_games) {
-        if (slot == ContentProviderUnionSlot::FrontendManual)
+        if (slot == ContentProviderUnionSlot::FrontendManual) {
             continue;
+        }
 
         const auto file = cache.GetEntryUnparsed(game.title_id, game.type);
-        std::unique_ptr<Loader::AppLoader> loader = Loader::GetLoader(file);
-        if (!loader)
+        std::unique_ptr<Loader::AppLoader> loader = Loader::GetLoader(system, file);
+        if (!loader) {
             continue;
+        }
 
         std::vector<u8> icon;
         std::string name;
         u64 program_id = 0;
         loader->ReadProgramId(program_id);
 
-        const PatchManager patch{program_id};
+        const PatchManager patch{program_id, system.GetFileSystemController(),
+                                 system.GetContentProvider()};
         const auto control = cache.GetEntry(game.title_id, ContentRecordType::Control);
-        if (control != nullptr)
+        if (control != nullptr) {
             GetMetadataFromControlNCA(patch, *control, icon, name);
+        }
 
         emit EntryReady(MakeGameListEntry(file->GetFullPath(), name, icon, *loader, program_id,
                                           compatibility_list, patch),
@@ -280,20 +283,22 @@ void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
 
 void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_path,
                                     unsigned int recursion, GameListDir* parent_dir) {
-    const auto callback = [this, target, recursion,
-                           parent_dir](u64* num_entries_out, const std::string& directory,
-                                       const std::string& virtual_name) -> bool {
+    auto& system = Core::System::GetInstance();
+
+    const auto callback = [this, target, recursion, parent_dir,
+                           &system](u64* num_entries_out, const std::string& directory,
+                                    const std::string& virtual_name) -> bool {
         if (stop_processing) {
             // Breaks the callback loop.
             return false;
         }
 
         const std::string physical_name = directory + DIR_SEP + virtual_name;
-        const bool is_dir = FileUtil::IsDirectory(physical_name);
+        const bool is_dir = Common::FS::IsDirectory(physical_name);
         if (!is_dir &&
             (HasSupportedFileExtension(physical_name) || IsExtractedNCAMain(physical_name))) {
             const auto file = vfs->OpenFile(physical_name, FileSys::Mode::Read);
-            auto loader = Loader::GetLoader(file);
+            auto loader = Loader::GetLoader(system, file);
             if (!loader) {
                 return true;
             }
@@ -331,7 +336,8 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
                 std::string name = " ";
                 [[maybe_unused]] const auto res3 = loader->ReadTitle(name);
 
-                const FileSys::PatchManager patch{program_id};
+                const FileSys::PatchManager patch{program_id, system.GetFileSystemController(),
+                                                  system.GetContentProvider()};
 
                 emit EntryReady(MakeGameListEntry(physical_name, name, icon, *loader, program_id,
                                                   compatibility_list, patch),
@@ -345,11 +351,12 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
         return true;
     };
 
-    FileUtil::ForeachDirectoryEntry(nullptr, dir_path, callback);
+    Common::FS::ForeachDirectoryEntry(nullptr, dir_path, callback);
 }
 
 void GameListWorker::run() {
     stop_processing = false;
+    provider->ClearAllEntries();
 
     for (UISettings::GameDir& game_dir : game_dirs) {
         if (game_dir.path == QStringLiteral("SDMC")) {
@@ -368,13 +375,12 @@ void GameListWorker::run() {
             watch_list.append(game_dir.path);
             auto* const game_list_dir = new GameListDir(game_dir);
             emit DirEntryReady(game_list_dir);
-            provider->ClearAllEntries();
-            ScanFileSystem(ScanTarget::FillManualContentProvider, game_dir.path.toStdString(), 2,
-                           game_list_dir);
+            ScanFileSystem(ScanTarget::FillManualContentProvider, game_dir.path.toStdString(),
+                           game_dir.deep_scan ? 256 : 0, game_list_dir);
             ScanFileSystem(ScanTarget::PopulateGameList, game_dir.path.toStdString(),
                            game_dir.deep_scan ? 256 : 0, game_list_dir);
         }
-    };
+    }
 
     emit Finished(watch_list);
 }

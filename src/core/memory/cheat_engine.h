@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 #include "common/common_types.h"
@@ -46,8 +47,7 @@ class CheatParser {
 public:
     virtual ~CheatParser();
 
-    virtual std::vector<CheatEntry> Parse(const Core::System& system,
-                                          std::string_view data) const = 0;
+    [[nodiscard]] virtual std::vector<CheatEntry> Parse(std::string_view data) const = 0;
 };
 
 // CheatParser implementation that parses text files
@@ -55,7 +55,7 @@ class TextCheatParser final : public CheatParser {
 public:
     ~TextCheatParser() override;
 
-    std::vector<CheatEntry> Parse(const Core::System& system, std::string_view data) const override;
+    [[nodiscard]] std::vector<CheatEntry> Parse(std::string_view data) const override;
 };
 
 // Class that encapsulates a CheatList and manages its interaction with memory and CoreTiming
@@ -71,7 +71,7 @@ public:
     void Reload(std::vector<CheatEntry> cheats);
 
 private:
-    void FrameCallback(u64 userdata, s64 cycles_late);
+    void FrameCallback(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
 
     DmntCheatVm vm;
     CheatProcessMetadata metadata;

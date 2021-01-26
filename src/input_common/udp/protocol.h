@@ -7,7 +7,16 @@
 #include <array>
 #include <optional>
 #include <type_traits>
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4701)
+#endif
 #include <boost/crc.hpp>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 #include "common/bit_field.h"
 #include "common/swap.h"
 
@@ -93,7 +102,7 @@ static_assert(std::is_trivially_copyable_v<PadData>,
 
 /**
  * Creates a message with the proper header data that can be sent to the server.
- * @param T data Request body to send
+ * @param data Request body to send
  * @param client_id ID of the udp client (usually not checked on the server)
  */
 template <typename T>
@@ -130,6 +139,14 @@ struct PortInfo {
 static_assert(sizeof(PortInfo) == 12, "UDP Response PortInfo struct has wrong size");
 static_assert(std::is_trivially_copyable_v<PortInfo>,
               "UDP Response PortInfo is not trivially copyable");
+
+struct TouchPad {
+    u8 is_active{};
+    u8 id{};
+    u16_le x{};
+    u16_le y{};
+};
+static_assert(sizeof(TouchPad) == 6, "UDP Response TouchPad struct has wrong size ");
 
 #pragma pack(push, 1)
 struct PadData {
@@ -181,12 +198,7 @@ struct PadData {
         u8 button_13{};
     } analog_button;
 
-    struct TouchPad {
-        u8 is_active{};
-        u8 id{};
-        u16_le x{};
-        u16_le y{};
-    } touch_1, touch_2;
+    std::array<TouchPad, 2> touch;
 
     u64_le motion_timestamp;
 
@@ -213,7 +225,6 @@ static_assert(sizeof(Message<PadData>) == MAX_PACKET_SIZE,
 
 static_assert(sizeof(PadData::AnalogButton) == 12,
               "UDP Response AnalogButton struct has wrong size ");
-static_assert(sizeof(PadData::TouchPad) == 6, "UDP Response TouchPad struct has wrong size ");
 static_assert(sizeof(PadData::Accelerometer) == 12,
               "UDP Response Accelerometer struct has wrong size ");
 static_assert(sizeof(PadData::Gyroscope) == 12, "UDP Response Gyroscope struct has wrong size ");

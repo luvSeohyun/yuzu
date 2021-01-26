@@ -2,7 +2,7 @@ yuzu emulator
 =============
 [![Travis CI Build Status](https://travis-ci.com/yuzu-emu/yuzu.svg?branch=master)](https://travis-ci.com/yuzu-emu/yuzu)
 [![Azure Mainline CI Build Status](https://dev.azure.com/yuzu-emu/yuzu/_apis/build/status/yuzu%20mainline?branchName=master)](https://dev.azure.com/yuzu-emu/yuzu/)
-[![Discord](https://img.shields.io/discord/398318088170242053?color=%237289DA&label=yuzu&logo=discord&logoColor=white)](https://discord.gg/XQV6dn9)
+[![Discord](https://img.shields.io/discord/398318088170242053?color=%237289DA&label=yuzu&logo=discord&logoColor=white)](https://discord.com/invite/u77vRWY)
 
 yuzu is an experimental open-source emulator for the Nintendo Switch from the creators of [Citra](https://citra-emu.org/).
 
@@ -16,7 +16,7 @@ yuzu is licensed under the GPLv2 (or any later version). Refer to the license.tx
 
 Check out our [website](https://yuzu-emu.org/)!
 
-For development discussion, please join us on [Discord](https://discord.gg/XQV6dn9).
+For development discussion, please join us on [Discord](https://discord.com/invite/u77vRWY).
 
 ### Development
 
@@ -24,11 +24,12 @@ Most of the development happens on GitHub. It's also where [our central reposito
 
 If you want to contribute please take a look at the [Contributor's Guide](https://github.com/yuzu-emu/yuzu/wiki/Contributing) and [Developer Information](https://github.com/yuzu-emu/yuzu/wiki/Developer-Information). You should also contact any of the developers on Discord in order to know about the current state of the emulator.
 
+If you want to contribute to the user interface translation, please check out the [yuzu project on transifex](https://www.transifex.com/yuzu-emulator/yuzu). We centralize translation work there, and periodically upstream translations.
+
 ### Building
 
 * __Windows__: [Windows Build](https://github.com/yuzu-emu/yuzu/wiki/Building-For-Windows)
 * __Linux__: [Linux Build](https://github.com/yuzu-emu/yuzu/wiki/Building-For-Linux)
-* __macOS__: [macOS Build](https://github.com/yuzu-emu/yuzu/wiki/Building-for-macOS)
 
 
 ### Support

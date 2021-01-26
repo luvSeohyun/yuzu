@@ -119,7 +119,7 @@ union ResultCode {
     BitField<0, 9, ErrorModule> module;
     BitField<9, 13, u32> description;
 
-    constexpr explicit ResultCode(u32 raw) : raw(raw) {}
+    constexpr explicit ResultCode(u32 raw_) : raw(raw_) {}
 
     constexpr ResultCode(ErrorModule module_, u32 description_)
         : raw(module.FormatValue(module_) | description.FormatValue(description_)) {}
@@ -342,8 +342,9 @@ ResultVal<std::remove_reference_t<Arg>> MakeResult(Arg&& arg) {
  */
 #define CASCADE_RESULT(target, source)                                                             \
     auto CONCAT2(check_result_L, __LINE__) = source;                                               \
-    if (CONCAT2(check_result_L, __LINE__).Failed())                                                \
+    if (CONCAT2(check_result_L, __LINE__).Failed()) {                                              \
         return CONCAT2(check_result_L, __LINE__).Code();                                           \
+    }                                                                                              \
     target = std::move(*CONCAT2(check_result_L, __LINE__))
 
 /**
@@ -351,6 +352,9 @@ ResultVal<std::remove_reference_t<Arg>> MakeResult(Arg&& arg) {
  * non-success, or discarded otherwise.
  */
 #define CASCADE_CODE(source)                                                                       \
-    auto CONCAT2(check_result_L, __LINE__) = source;                                               \
-    if (CONCAT2(check_result_L, __LINE__).IsError())                                               \
-        return CONCAT2(check_result_L, __LINE__);
+    do {                                                                                           \
+        auto CONCAT2(check_result_L, __LINE__) = source;                                           \
+        if (CONCAT2(check_result_L, __LINE__).IsError()) {                                         \
+            return CONCAT2(check_result_L, __LINE__);                                              \
+        }                                                                                          \
+    } while (false)

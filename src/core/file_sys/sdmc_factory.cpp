@@ -5,10 +5,12 @@
 #include <memory>
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/sdmc_factory.h"
+#include "core/file_sys/vfs.h"
 #include "core/file_sys/xts_archive.h"
-#include "core/settings.h"
 
 namespace FileSys {
+
+constexpr u64 SDMC_TOTAL_SIZE = 0x10000000000; // 1 TiB
 
 SDMCFactory::SDMCFactory(VirtualDir dir_)
     : dir(std::move(dir_)), contents(std::make_unique<RegisteredCache>(
@@ -46,7 +48,7 @@ u64 SDMCFactory::GetSDMCFreeSpace() const {
 }
 
 u64 SDMCFactory::GetSDMCTotalSpace() const {
-    return static_cast<u64>(Settings::values.sdmc_size);
+    return SDMC_TOTAL_SIZE;
 }
 
 } // namespace FileSys

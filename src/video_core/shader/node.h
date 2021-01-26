@@ -233,8 +233,9 @@ enum class OperationCode {
     ThreadLtMask,   /// () -> uint
     ShuffleIndexed, /// (uint value, uint index) -> uint
 
-    Barrier,         /// () -> void
-    MemoryBarrierGL, /// () -> void
+    Barrier,             /// () -> void
+    MemoryBarrierGroup,  /// () -> void
+    MemoryBarrierGlobal, /// () -> void
 
     Amount,
 };
@@ -274,89 +275,79 @@ using Node = std::shared_ptr<NodeData>;
 using Node4 = std::array<Node, 4>;
 using NodeBlock = std::vector<Node>;
 
-class BindlessSamplerNode;
-class ArraySamplerNode;
+struct ArraySamplerNode;
+struct BindlessSamplerNode;
+struct SeparateSamplerNode;
 
-using TrackSamplerData = std::variant<BindlessSamplerNode, ArraySamplerNode>;
+using TrackSamplerData = std::variant<BindlessSamplerNode, SeparateSamplerNode, ArraySamplerNode>;
 using TrackSampler = std::shared_ptr<TrackSamplerData>;
 
-struct Sampler {
+struct SamplerEntry {
     /// Bound samplers constructor
-    constexpr explicit Sampler(u32 index, u32 offset, Tegra::Shader::TextureType type,
-                               bool is_array, bool is_shadow, bool is_buffer, bool is_indexed)
-        : index{index}, offset{offset}, type{type}, is_array{is_array}, is_shadow{is_shadow},
-          is_buffer{is_buffer}, is_indexed{is_indexed} {}
+    explicit SamplerEntry(u32 index_, u32 offset_, Tegra::Shader::TextureType type_, bool is_array_,
+                          bool is_shadow_, bool is_buffer_, bool is_indexed_)
+        : index{index_}, offset{offset_}, type{type_}, is_array{is_array_}, is_shadow{is_shadow_},
+          is_buffer{is_buffer_}, is_indexed{is_indexed_} {}
+
+    /// Separate sampler constructor
+    explicit SamplerEntry(u32 index_, std::pair<u32, u32> offsets, std::pair<u32, u32> buffers,
+                          Tegra::Shader::TextureType type_, bool is_array_, bool is_shadow_,
+                          bool is_buffer_)
+        : index{index_}, offset{offsets.first}, secondary_offset{offsets.second},
+          buffer{buffers.first}, secondary_buffer{buffers.second}, type{type_}, is_array{is_array_},
+          is_shadow{is_shadow_}, is_buffer{is_buffer_}, is_separated{true} {}
 
     /// Bindless samplers constructor
-    constexpr explicit Sampler(u32 index, u32 offset, u32 buffer, Tegra::Shader::TextureType type,
-                               bool is_array, bool is_shadow, bool is_buffer, bool is_indexed)
-        : index{index}, offset{offset}, buffer{buffer}, type{type}, is_array{is_array},
-          is_shadow{is_shadow}, is_buffer{is_buffer}, is_bindless{true}, is_indexed{is_indexed} {}
+    explicit SamplerEntry(u32 index_, u32 offset_, u32 buffer_, Tegra::Shader::TextureType type_,
+                          bool is_array_, bool is_shadow_, bool is_buffer_, bool is_indexed_)
+        : index{index_}, offset{offset_}, buffer{buffer_}, type{type_}, is_array{is_array_},
+          is_shadow{is_shadow_}, is_buffer{is_buffer_}, is_bindless{true}, is_indexed{is_indexed_} {
+    }
 
-    u32 index = 0;  ///< Emulated index given for the this sampler.
-    u32 offset = 0; ///< Offset in the const buffer from where the sampler is being read.
-    u32 buffer = 0; ///< Buffer where the bindless sampler is being read (unused on bound samplers).
-    u32 size = 1;   ///< Size of the sampler.
+    u32 index = 0;            ///< Emulated index given for the this sampler.
+    u32 offset = 0;           ///< Offset in the const buffer from where the sampler is being read.
+    u32 secondary_offset = 0; ///< Secondary offset in the const buffer.
+    u32 buffer = 0;           ///< Buffer where the bindless sampler is read.
+    u32 secondary_buffer = 0; ///< Secondary buffer where the bindless sampler is read.
+    u32 size = 1;             ///< Size of the sampler.
 
     Tegra::Shader::TextureType type{}; ///< The type used to sample this texture (Texture2D, etc)
-    bool is_array = false;    ///< Whether the texture is being sampled as an array texture or not.
-    bool is_shadow = false;   ///< Whether the texture is being sampled as a depth texture or not.
-    bool is_buffer = false;   ///< Whether the texture is a texture buffer without sampler.
-    bool is_bindless = false; ///< Whether this sampler belongs to a bindless texture or not.
-    bool is_indexed = false;  ///< Whether this sampler is an indexed array of textures.
+    bool is_array = false;     ///< Whether the texture is being sampled as an array texture or not.
+    bool is_shadow = false;    ///< Whether the texture is being sampled as a depth texture or not.
+    bool is_buffer = false;    ///< Whether the texture is a texture buffer without sampler.
+    bool is_bindless = false;  ///< Whether this sampler belongs to a bindless texture or not.
+    bool is_indexed = false;   ///< Whether this sampler is an indexed array of textures.
+    bool is_separated = false; ///< Whether the image and sampler is separated or not.
 };
 
 /// Represents a tracked bindless sampler into a direct const buffer
-class ArraySamplerNode final {
-public:
-    explicit ArraySamplerNode(u32 index, u32 base_offset, u32 bindless_var)
-        : index{index}, base_offset{base_offset}, bindless_var{bindless_var} {}
-
-    constexpr u32 GetIndex() const {
-        return index;
-    }
-
-    constexpr u32 GetBaseOffset() const {
-        return base_offset;
-    }
-
-    constexpr u32 GetIndexVar() const {
-        return bindless_var;
-    }
-
-private:
+struct ArraySamplerNode {
     u32 index;
     u32 base_offset;
     u32 bindless_var;
 };
 
+/// Represents a tracked separate sampler image pair that was folded statically
+struct SeparateSamplerNode {
+    std::pair<u32, u32> indices;
+    std::pair<u32, u32> offsets;
+};
+
 /// Represents a tracked bindless sampler into a direct const buffer
-class BindlessSamplerNode final {
-public:
-    explicit BindlessSamplerNode(u32 index, u32 offset) : index{index}, offset{offset} {}
-
-    constexpr u32 GetIndex() const {
-        return index;
-    }
-
-    constexpr u32 GetOffset() const {
-        return offset;
-    }
-
-private:
+struct BindlessSamplerNode {
     u32 index;
     u32 offset;
 };
 
-struct Image {
+struct ImageEntry {
 public:
     /// Bound images constructor
-    constexpr explicit Image(u32 index, u32 offset, Tegra::Shader::ImageType type)
-        : index{index}, offset{offset}, type{type} {}
+    explicit ImageEntry(u32 index_, u32 offset_, Tegra::Shader::ImageType type_)
+        : index{index_}, offset{offset_}, type{type_} {}
 
     /// Bindless samplers constructor
-    constexpr explicit Image(u32 index, u32 offset, u32 buffer, Tegra::Shader::ImageType type)
-        : index{index}, offset{offset}, buffer{buffer}, type{type}, is_bindless{true} {}
+    explicit ImageEntry(u32 index_, u32 offset_, u32 buffer_, Tegra::Shader::ImageType type_)
+        : index{index_}, offset{offset_}, buffer{buffer_}, type{type_}, is_bindless{true} {}
 
     void MarkWrite() {
         is_written = true;
@@ -387,7 +378,7 @@ struct GlobalMemoryBase {
     u32 cbuf_index = 0;
     u32 cbuf_offset = 0;
 
-    bool operator<(const GlobalMemoryBase& rhs) const {
+    [[nodiscard]] bool operator<(const GlobalMemoryBase& rhs) const {
         return std::tie(cbuf_index, cbuf_offset) < std::tie(rhs.cbuf_index, rhs.cbuf_offset);
     }
 };
@@ -399,7 +390,7 @@ struct MetaArithmetic {
 
 /// Parameters describing a texture sampler
 struct MetaTexture {
-    Sampler sampler;
+    SamplerEntry sampler;
     Node array;
     Node depth_compare;
     std::vector<Node> aoffi;
@@ -413,7 +404,7 @@ struct MetaTexture {
 };
 
 struct MetaImage {
-    const Image& image;
+    const ImageEntry& image;
     std::vector<Node> values;
     u32 element{};
 };
@@ -424,7 +415,7 @@ using Meta =
 
 class AmendNode {
 public:
-    std::optional<std::size_t> GetAmendIndex() const {
+    [[nodiscard]] std::optional<std::size_t> GetAmendIndex() const {
         if (amend_index == amend_null_index) {
             return std::nullopt;
         }
@@ -447,34 +438,34 @@ private:
 /// Holds any kind of operation that can be done in the IR
 class OperationNode final : public AmendNode {
 public:
-    explicit OperationNode(OperationCode code) : OperationNode(code, Meta{}) {}
+    explicit OperationNode(OperationCode code_) : OperationNode(code_, Meta{}) {}
 
-    explicit OperationNode(OperationCode code, Meta meta)
-        : OperationNode(code, std::move(meta), std::vector<Node>{}) {}
+    explicit OperationNode(OperationCode code_, Meta meta_)
+        : OperationNode(code_, std::move(meta_), std::vector<Node>{}) {}
 
-    explicit OperationNode(OperationCode code, std::vector<Node> operands)
-        : OperationNode(code, Meta{}, std::move(operands)) {}
+    explicit OperationNode(OperationCode code_, std::vector<Node> operands_)
+        : OperationNode(code_, Meta{}, std::move(operands_)) {}
 
-    explicit OperationNode(OperationCode code, Meta meta, std::vector<Node> operands)
-        : code{code}, meta{std::move(meta)}, operands{std::move(operands)} {}
+    explicit OperationNode(OperationCode code_, Meta meta_, std::vector<Node> operands_)
+        : code{code_}, meta{std::move(meta_)}, operands{std::move(operands_)} {}
 
     template <typename... Args>
-    explicit OperationNode(OperationCode code, Meta meta, Args&&... operands)
-        : code{code}, meta{std::move(meta)}, operands{operands...} {}
+    explicit OperationNode(OperationCode code_, Meta meta_, Args&&... operands_)
+        : code{code_}, meta{std::move(meta_)}, operands{operands_...} {}
 
-    OperationCode GetCode() const {
+    [[nodiscard]] OperationCode GetCode() const {
         return code;
     }
 
-    const Meta& GetMeta() const {
+    [[nodiscard]] const Meta& GetMeta() const {
         return meta;
     }
 
-    std::size_t GetOperandsCount() const {
+    [[nodiscard]] std::size_t GetOperandsCount() const {
         return operands.size();
     }
 
-    const Node& operator[](std::size_t operand_index) const {
+    [[nodiscard]] const Node& operator[](std::size_t operand_index) const {
         return operands.at(operand_index);
     }
 
@@ -487,14 +478,14 @@ private:
 /// Encloses inside any kind of node that returns a boolean conditionally-executed code
 class ConditionalNode final : public AmendNode {
 public:
-    explicit ConditionalNode(Node condition, std::vector<Node>&& code)
-        : condition{std::move(condition)}, code{std::move(code)} {}
+    explicit ConditionalNode(Node condition_, std::vector<Node>&& code_)
+        : condition{std::move(condition_)}, code{std::move(code_)} {}
 
-    const Node& GetCondition() const {
+    [[nodiscard]] const Node& GetCondition() const {
         return condition;
     }
 
-    const std::vector<Node>& GetCode() const {
+    [[nodiscard]] const std::vector<Node>& GetCode() const {
         return code;
     }
 
@@ -506,9 +497,9 @@ private:
 /// A general purpose register
 class GprNode final {
 public:
-    explicit constexpr GprNode(Tegra::Shader::Register index) : index{index} {}
+    explicit constexpr GprNode(Tegra::Shader::Register index_) : index{index_} {}
 
-    u32 GetIndex() const {
+    [[nodiscard]] constexpr u32 GetIndex() const {
         return static_cast<u32>(index);
     }
 
@@ -519,9 +510,9 @@ private:
 /// A custom variable
 class CustomVarNode final {
 public:
-    explicit constexpr CustomVarNode(u32 index) : index{index} {}
+    explicit constexpr CustomVarNode(u32 index_) : index{index_} {}
 
-    constexpr u32 GetIndex() const {
+    [[nodiscard]] constexpr u32 GetIndex() const {
         return index;
     }
 
@@ -532,9 +523,9 @@ private:
 /// A 32-bits value that represents an immediate value
 class ImmediateNode final {
 public:
-    explicit constexpr ImmediateNode(u32 value) : value{value} {}
+    explicit constexpr ImmediateNode(u32 value_) : value{value_} {}
 
-    u32 GetValue() const {
+    [[nodiscard]] constexpr u32 GetValue() const {
         return value;
     }
 
@@ -545,9 +536,9 @@ private:
 /// One of Maxwell's internal flags
 class InternalFlagNode final {
 public:
-    explicit constexpr InternalFlagNode(InternalFlag flag) : flag{flag} {}
+    explicit constexpr InternalFlagNode(InternalFlag flag_) : flag{flag_} {}
 
-    InternalFlag GetFlag() const {
+    [[nodiscard]] constexpr InternalFlag GetFlag() const {
         return flag;
     }
 
@@ -558,14 +549,14 @@ private:
 /// A predicate register, it can be negated without additional nodes
 class PredicateNode final {
 public:
-    explicit constexpr PredicateNode(Tegra::Shader::Pred index, bool negated)
-        : index{index}, negated{negated} {}
+    explicit constexpr PredicateNode(Tegra::Shader::Pred index_, bool negated_)
+        : index{index_}, negated{negated_} {}
 
-    Tegra::Shader::Pred GetIndex() const {
+    [[nodiscard]] constexpr Tegra::Shader::Pred GetIndex() const {
         return index;
     }
 
-    bool IsNegated() const {
+    [[nodiscard]] constexpr bool IsNegated() const {
         return negated;
     }
 
@@ -578,30 +569,30 @@ private:
 class AbufNode final {
 public:
     // Initialize for standard attributes (index is explicit).
-    explicit AbufNode(Tegra::Shader::Attribute::Index index, u32 element, Node buffer = {})
-        : buffer{std::move(buffer)}, index{index}, element{element} {}
+    explicit AbufNode(Tegra::Shader::Attribute::Index index_, u32 element_, Node buffer_ = {})
+        : buffer{std::move(buffer_)}, index{index_}, element{element_} {}
 
     // Initialize for physical attributes (index is a variable value).
-    explicit AbufNode(Node physical_address, Node buffer = {})
-        : physical_address{std::move(physical_address)}, buffer{std::move(buffer)} {}
+    explicit AbufNode(Node physical_address_, Node buffer_ = {})
+        : physical_address{std::move(physical_address_)}, buffer{std::move(buffer_)} {}
 
-    Tegra::Shader::Attribute::Index GetIndex() const {
+    [[nodiscard]] Tegra::Shader::Attribute::Index GetIndex() const {
         return index;
     }
 
-    u32 GetElement() const {
+    [[nodiscard]] u32 GetElement() const {
         return element;
     }
 
-    const Node& GetBuffer() const {
+    [[nodiscard]] const Node& GetBuffer() const {
         return buffer;
     }
 
-    bool IsPhysicalBuffer() const {
+    [[nodiscard]] bool IsPhysicalBuffer() const {
         return static_cast<bool>(physical_address);
     }
 
-    const Node& GetPhysicalAddress() const {
+    [[nodiscard]] const Node& GetPhysicalAddress() const {
         return physical_address;
     }
 
@@ -615,9 +606,9 @@ private:
 /// Patch memory (used to communicate tessellation stages).
 class PatchNode final {
 public:
-    explicit PatchNode(u32 offset) : offset{offset} {}
+    explicit constexpr PatchNode(u32 offset_) : offset{offset_} {}
 
-    u32 GetOffset() const {
+    [[nodiscard]] constexpr u32 GetOffset() const {
         return offset;
     }
 
@@ -628,13 +619,13 @@ private:
 /// Constant buffer node, usually mapped to uniform buffers in GLSL
 class CbufNode final {
 public:
-    explicit CbufNode(u32 index, Node offset) : index{index}, offset{std::move(offset)} {}
+    explicit CbufNode(u32 index_, Node offset_) : index{index_}, offset{std::move(offset_)} {}
 
-    u32 GetIndex() const {
+    [[nodiscard]] u32 GetIndex() const {
         return index;
     }
 
-    const Node& GetOffset() const {
+    [[nodiscard]] const Node& GetOffset() const {
         return offset;
     }
 
@@ -646,9 +637,9 @@ private:
 /// Local memory node
 class LmemNode final {
 public:
-    explicit LmemNode(Node address) : address{std::move(address)} {}
+    explicit LmemNode(Node address_) : address{std::move(address_)} {}
 
-    const Node& GetAddress() const {
+    [[nodiscard]] const Node& GetAddress() const {
         return address;
     }
 
@@ -659,9 +650,9 @@ private:
 /// Shared memory node
 class SmemNode final {
 public:
-    explicit SmemNode(Node address) : address{std::move(address)} {}
+    explicit SmemNode(Node address_) : address{std::move(address_)} {}
 
-    const Node& GetAddress() const {
+    [[nodiscard]] const Node& GetAddress() const {
         return address;
     }
 
@@ -672,19 +663,19 @@ private:
 /// Global memory node
 class GmemNode final {
 public:
-    explicit GmemNode(Node real_address, Node base_address, const GlobalMemoryBase& descriptor)
-        : real_address{std::move(real_address)}, base_address{std::move(base_address)},
-          descriptor{descriptor} {}
+    explicit GmemNode(Node real_address_, Node base_address_, const GlobalMemoryBase& descriptor_)
+        : real_address{std::move(real_address_)}, base_address{std::move(base_address_)},
+          descriptor{descriptor_} {}
 
-    const Node& GetRealAddress() const {
+    [[nodiscard]] const Node& GetRealAddress() const {
         return real_address;
     }
 
-    const Node& GetBaseAddress() const {
+    [[nodiscard]] const Node& GetBaseAddress() const {
         return base_address;
     }
 
-    const GlobalMemoryBase& GetDescriptor() const {
+    [[nodiscard]] const GlobalMemoryBase& GetDescriptor() const {
         return descriptor;
     }
 
@@ -697,9 +688,9 @@ private:
 /// Commentary, can be dropped
 class CommentNode final {
 public:
-    explicit CommentNode(std::string text) : text{std::move(text)} {}
+    explicit CommentNode(std::string text_) : text{std::move(text_)} {}
 
-    const std::string& GetText() const {
+    [[nodiscard]] const std::string& GetText() const {
         return text;
     }
 

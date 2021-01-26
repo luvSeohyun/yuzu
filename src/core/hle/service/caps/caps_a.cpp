@@ -1,4 +1,4 @@
-// Copyright 2020 yuzu emulator team
+// Copyright 2020 yuzu Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -8,7 +8,8 @@ namespace Service::Capture {
 
 class IAlbumAccessorSession final : public ServiceFramework<IAlbumAccessorSession> {
 public:
-    explicit IAlbumAccessorSession() : ServiceFramework{"IAlbumAccessorSession"} {
+    explicit IAlbumAccessorSession(Core::System& system_)
+        : ServiceFramework{system_, "IAlbumAccessorSession"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {2001, nullptr, "OpenAlbumMovieReadStream"},
@@ -26,7 +27,7 @@ public:
     }
 };
 
-CAPS_A::CAPS_A() : ServiceFramework("caps:a") {
+CAPS_A::CAPS_A(Core::System& system_) : ServiceFramework{system_, "caps:a"} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, nullptr, "GetAlbumFileCount"},

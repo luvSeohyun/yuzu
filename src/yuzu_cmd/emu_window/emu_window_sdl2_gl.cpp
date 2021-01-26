@@ -17,7 +17,6 @@
 #include "core/settings.h"
 #include "input_common/keyboard.h"
 #include "input_common/main.h"
-#include "input_common/motion_emu.h"
 #include "video_core/renderer_base.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl2_gl.h"
 
@@ -87,8 +86,8 @@ bool EmuWindow_SDL2_GL::SupportsRequiredGLExtensions() {
     return unsupported_ext.empty();
 }
 
-EmuWindow_SDL2_GL::EmuWindow_SDL2_GL(Core::System& system, bool fullscreen)
-    : EmuWindow_SDL2{system, fullscreen} {
+EmuWindow_SDL2_GL::EmuWindow_SDL2_GL(InputCommon::InputSubsystem* input_subsystem, bool fullscreen)
+    : EmuWindow_SDL2{input_subsystem} {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
@@ -98,6 +97,9 @@ EmuWindow_SDL2_GL::EmuWindow_SDL2_GL(Core::System& system, bool fullscreen)
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+    if (Settings::values.renderer_debug) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+    }
     SDL_GL_SetSwapInterval(0);
 
     std::string window_title = fmt::format("yuzu {} | {}-{}", Common::g_build_fullname,
@@ -158,14 +160,4 @@ EmuWindow_SDL2_GL::~EmuWindow_SDL2_GL() {
 
 std::unique_ptr<Core::Frontend::GraphicsContext> EmuWindow_SDL2_GL::CreateSharedContext() const {
     return std::make_unique<SDLGLContext>();
-}
-
-void EmuWindow_SDL2_GL::Present() {
-    SDL_GL_MakeCurrent(render_window, window_context);
-    SDL_GL_SetSwapInterval(Settings::values.use_vsync ? 1 : 0);
-    while (IsOpen()) {
-        system.Renderer().TryPresent(100);
-        SDL_GL_SwapWindow(render_window);
-    }
-    SDL_GL_MakeCurrent(render_window, nullptr);
 }

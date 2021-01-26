@@ -65,6 +65,14 @@ button_screenshot=
 lstick=
 rstick=
 
+# Whether to enable or disable vibration
+# 0: Disabled, 1 (default): Enabled
+vibration_enabled=
+
+# Whether to enable or disable accurate vibrations
+# 0 (default): Disabled, 1: Enabled
+enable_accurate_vibrations=
+
 # for motion input, the following devices are available:
 #  - "motion_emu" (default) for emulating motion input from mouse input. Required parameters:
 #      - "update_period": update period in milliseconds (default to 100)
@@ -94,8 +102,41 @@ udp_pad_index=
 
 [Core]
 # Whether to use multi-core for CPU emulation
-# 0 (default): Disabled, 1: Enabled
+# 0: Disabled, 1 (default): Enabled
 use_multi_core=
+
+[Cpu]
+# Enable inline page tables optimization (faster guest memory access)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_page_tables =
+
+# Enable block linking CPU optimization (reduce block dispatcher use during predictable jumps)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_block_linking =
+
+# Enable return stack buffer CPU optimization (reduce block dispatcher use during predictable returns)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_return_stack_buffer =
+
+# Enable fast dispatcher CPU optimization (use a two-tiered dispatcher architecture)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_fast_dispatcher =
+
+# Enable context elimination CPU Optimization (reduce host memory use for guest context)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_context_elimination =
+
+# Enable constant propagation CPU optimization (basic IR optimization)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_const_prop =
+
+# Enable miscellaneous CPU optimizations (basic IR optimization)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_misc_ir =
+
+# Enable reduction of memory misalignment checks (reduce memory fallbacks for misaligned access)
+# 0: Disabled, 1 (default): Enabled
+cpuopt_reduce_misalign_checks =
 
 [Renderer]
 # Which backend API to use.
@@ -117,11 +158,6 @@ use_hw_renderer =
 # 0: Interpreter (slow), 1 (default): JIT (fast)
 use_shader_jit =
 
-# Resolution scale factor
-# 0: Auto (scales resolution to window size), 1: Native Switch screen resolution, Otherwise a scale
-# factor for the Switch resolution
-resolution_factor =
-
 # Aspect ratio
 # 0: Default (16:9), 1: Force 4:3, 2: Force 21:9, 3: Stretch to Window
 aspect_ratio =
@@ -135,8 +171,12 @@ max_anisotropy =
 use_vsync =
 
 # Whether to use OpenGL assembly shaders or not. NV_gpu_program5 is required.
-# 0 (default): Off, 1: On
+# 0: Off, 1 (default): On
 use_assembly_shaders =
+
+# Whether to allow asynchronous shader building.
+# 0 (default): Off, 1: On
+use_asynchronous_shaders =
 
 # Turns on the frame limiter, which will limit frames output to the target game speed
 # 0: Off, 1: On (default)
@@ -234,7 +274,7 @@ gamecard_path =
 
 [System]
 # Whether the system is docked
-# 1: Yes, 0 (default): No
+# 1 (default): Yes, 0: No
 use_docked_mode =
 
 # Allow the use of NFC in games
@@ -278,9 +318,6 @@ log_filter = *:Trace
 [Debugging]
 # Record frame time data, can be found in the log directory. Boolean value
 record_frame_times =
-# Port for listening to GDB connections.
-use_gdbstub=false
-gdbstub_port=24689
 # Determines whether or not yuzu will dump the ExeFS of all games it attempts to load while loading them
 dump_exefs=false
 # Determines whether or not yuzu will dump all NSOs it attempts to load while loading them
@@ -288,9 +325,8 @@ dump_nso=false
 # Determines whether or not yuzu will report to the game that the emulated console is in Kiosk Mode
 # false: Retail/Normal Mode (default), true: Kiosk Mode
 quest_flag =
-# Determines whether or not JIT CPU optimizations are enabled
-# false: Optimizations Enabled, true: Optimizations Disabled
-disable_cpu_opt =
+# Enables/Disables the macro JIT compiler
+disable_macro_jit=false
 
 [WebService]
 # Whether or not to enable telemetry

@@ -12,7 +12,7 @@
 #include "common/x64/cpu_detect.h"
 #endif
 
-namespace Telemetry {
+namespace Common::Telemetry {
 
 void FieldCollection::Accept(VisitorInterface& visitor) const {
     for (const auto& field : fields) {
@@ -60,6 +60,7 @@ void AppendCPUInfo(FieldCollection& fc) {
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_AES", Common::GetCPUCaps().aes);
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_AVX", Common::GetCPUCaps().avx);
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_AVX2", Common::GetCPUCaps().avx2);
+    fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_AVX512", Common::GetCPUCaps().avx512);
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_BMI1", Common::GetCPUCaps().bmi1);
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_BMI2", Common::GetCPUCaps().bmi2);
     fc.AddField(FieldType::UserSystem, "CPU_Extension_x64_FMA", Common::GetCPUCaps().fma);
@@ -87,4 +88,4 @@ void AppendOSInfo(FieldCollection& fc) {
 #endif
 }
 
-} // namespace Telemetry
+} // namespace Common::Telemetry

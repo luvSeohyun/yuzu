@@ -10,8 +10,9 @@
 
 namespace Service::Time {
 
-ITimeZoneService ::ITimeZoneService(TimeZone::TimeZoneContentManager& time_zone_content_manager)
-    : ServiceFramework("ITimeZoneService"), time_zone_content_manager{time_zone_content_manager} {
+ITimeZoneService ::ITimeZoneService(Core::System& system_,
+                                    TimeZone::TimeZoneContentManager& time_zone_manager_)
+    : ServiceFramework{system_, "ITimeZoneService"}, time_zone_content_manager{time_zone_manager_} {
     static const FunctionInfo functions[] = {
         {0, &ITimeZoneService::GetDeviceLocationName, "GetDeviceLocationName"},
         {1, nullptr, "SetDeviceLocationName"},
@@ -142,7 +143,7 @@ void ITimeZoneService::ToPosixTime(Kernel::HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
     rb.PushRaw<u32>(1); // Number of times we're returning
-    ctx.WriteBuffer(&posix_time, sizeof(s64));
+    ctx.WriteBuffer(posix_time);
 }
 
 void ITimeZoneService::ToPosixTimeWithMyRule(Kernel::HLERequestContext& ctx) {
@@ -164,7 +165,7 @@ void ITimeZoneService::ToPosixTimeWithMyRule(Kernel::HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
     rb.PushRaw<u32>(1); // Number of times we're returning
-    ctx.WriteBuffer(&posix_time, sizeof(s64));
+    ctx.WriteBuffer(posix_time);
 }
 
 } // namespace Service::Time

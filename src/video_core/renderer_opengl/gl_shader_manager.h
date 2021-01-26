@@ -45,17 +45,15 @@ public:
     /// Rewinds BindHostPipeline state changes.
     void RestoreGuestPipeline();
 
-    void UseVertexShader(GLuint program) {
-        current_state.vertex = program;
-    }
+    /// Binds an OpenGL GLSL program object unsynchronized with the guest state.
+    void BindHostCompute(GLuint program);
 
-    void UseGeometryShader(GLuint program) {
-        current_state.geometry = program;
-    }
+    /// Rewinds BindHostCompute state changes.
+    void RestoreGuestCompute();
 
-    void UseFragmentShader(GLuint program) {
-        current_state.fragment = program;
-    }
+    void UseVertexShader(GLuint program);
+    void UseGeometryShader(GLuint program);
+    void UseFragmentShader(GLuint program);
 
 private:
     struct PipelineState {
@@ -63,9 +61,6 @@ private:
         GLuint geometry = 0;
         GLuint fragment = 0;
     };
-
-    /// Update NV_gpu_program5 programs.
-    void UpdateAssemblyPrograms();
 
     /// Update GLSL programs.
     void UpdateSourcePrograms();

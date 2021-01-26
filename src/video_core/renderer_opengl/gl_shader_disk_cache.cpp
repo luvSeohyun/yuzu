@@ -29,6 +29,8 @@ using VideoCommon::Shader::KeyMap;
 
 namespace {
 
+using VideoCommon::Shader::SeparateSamplerKey;
+
 using ShaderCacheVersionHash = std::array<u8, 64>;
 
 struct ConstBufferKey {
@@ -37,18 +39,26 @@ struct ConstBufferKey {
     u32 value = 0;
 };
 
-struct BoundSamplerKey {
+struct BoundSamplerEntry {
     u32 offset = 0;
     Tegra::Engines::SamplerDescriptor sampler;
 };
 
-struct BindlessSamplerKey {
+struct SeparateSamplerEntry {
+    u32 cbuf1 = 0;
+    u32 cbuf2 = 0;
+    u32 offset1 = 0;
+    u32 offset2 = 0;
+    Tegra::Engines::SamplerDescriptor sampler;
+};
+
+struct BindlessSamplerEntry {
     u32 cbuf = 0;
     u32 offset = 0;
     Tegra::Engines::SamplerDescriptor sampler;
 };
 
-constexpr u32 NativeVersion = 20;
+constexpr u32 NativeVersion = 21;
 
 ShaderCacheVersionHash GetShaderCacheVersionHash() {
     ShaderCacheVersionHash hash{};
@@ -63,7 +73,7 @@ ShaderDiskCacheEntry::ShaderDiskCacheEntry() = default;
 
 ShaderDiskCacheEntry::~ShaderDiskCacheEntry() = default;
 
-bool ShaderDiskCacheEntry::Load(FileUtil::IOFile& file) {
+bool ShaderDiskCacheEntry::Load(Common::FS::IOFile& file) {
     if (file.ReadBytes(&type, sizeof(u32)) != sizeof(u32)) {
         return false;
     }
@@ -87,12 +97,14 @@ bool ShaderDiskCacheEntry::Load(FileUtil::IOFile& file) {
     u32 texture_handler_size_value;
     u32 num_keys;
     u32 num_bound_samplers;
+    u32 num_separate_samplers;
     u32 num_bindless_samplers;
     if (file.ReadArray(&unique_identifier, 1) != 1 || file.ReadArray(&bound_buffer, 1) != 1 ||
         file.ReadArray(&is_texture_handler_size_known, 1) != 1 ||
         file.ReadArray(&texture_handler_size_value, 1) != 1 ||
         file.ReadArray(&graphics_info, 1) != 1 || file.ReadArray(&compute_info, 1) != 1 ||
         file.ReadArray(&num_keys, 1) != 1 || file.ReadArray(&num_bound_samplers, 1) != 1 ||
+        file.ReadArray(&num_separate_samplers, 1) != 1 ||
         file.ReadArray(&num_bindless_samplers, 1) != 1) {
         return false;
     }
@@ -101,29 +113,38 @@ bool ShaderDiskCacheEntry::Load(FileUtil::IOFile& file) {
     }
 
     std::vector<ConstBufferKey> flat_keys(num_keys);
-    std::vector<BoundSamplerKey> flat_bound_samplers(num_bound_samplers);
-    std::vector<BindlessSamplerKey> flat_bindless_samplers(num_bindless_samplers);
+    std::vector<BoundSamplerEntry> flat_bound_samplers(num_bound_samplers);
+    std::vector<SeparateSamplerEntry> flat_separate_samplers(num_separate_samplers);
+    std::vector<BindlessSamplerEntry> flat_bindless_samplers(num_bindless_samplers);
     if (file.ReadArray(flat_keys.data(), flat_keys.size()) != flat_keys.size() ||
         file.ReadArray(flat_bound_samplers.data(), flat_bound_samplers.size()) !=
             flat_bound_samplers.size() ||
+        file.ReadArray(flat_separate_samplers.data(), flat_separate_samplers.size()) !=
+            flat_separate_samplers.size() ||
         file.ReadArray(flat_bindless_samplers.data(), flat_bindless_samplers.size()) !=
             flat_bindless_samplers.size()) {
         return false;
     }
-    for (const auto& key : flat_keys) {
-        keys.insert({{key.cbuf, key.offset}, key.value});
+    for (const auto& entry : flat_keys) {
+        keys.insert({{entry.cbuf, entry.offset}, entry.value});
     }
-    for (const auto& key : flat_bound_samplers) {
-        bound_samplers.emplace(key.offset, key.sampler);
+    for (const auto& entry : flat_bound_samplers) {
+        bound_samplers.emplace(entry.offset, entry.sampler);
     }
-    for (const auto& key : flat_bindless_samplers) {
-        bindless_samplers.insert({{key.cbuf, key.offset}, key.sampler});
+    for (const auto& entry : flat_separate_samplers) {
+        SeparateSamplerKey key;
+        key.buffers = {entry.cbuf1, entry.cbuf2};
+        key.offsets = {entry.offset1, entry.offset2};
+        separate_samplers.emplace(key, entry.sampler);
+    }
+    for (const auto& entry : flat_bindless_samplers) {
+        bindless_samplers.insert({{entry.cbuf, entry.offset}, entry.sampler});
     }
 
     return true;
 }
 
-bool ShaderDiskCacheEntry::Save(FileUtil::IOFile& file) const {
+bool ShaderDiskCacheEntry::Save(Common::FS::IOFile& file) const {
     if (file.WriteObject(static_cast<u32>(type)) != 1 ||
         file.WriteObject(static_cast<u32>(code.size())) != 1 ||
         file.WriteObject(static_cast<u32>(code_b.size())) != 1) {
@@ -142,6 +163,7 @@ bool ShaderDiskCacheEntry::Save(FileUtil::IOFile& file) const {
         file.WriteObject(graphics_info) != 1 || file.WriteObject(compute_info) != 1 ||
         file.WriteObject(static_cast<u32>(keys.size())) != 1 ||
         file.WriteObject(static_cast<u32>(bound_samplers.size())) != 1 ||
+        file.WriteObject(static_cast<u32>(separate_samplers.size())) != 1 ||
         file.WriteObject(static_cast<u32>(bindless_samplers.size())) != 1) {
         return false;
     }
@@ -152,48 +174,64 @@ bool ShaderDiskCacheEntry::Save(FileUtil::IOFile& file) const {
         flat_keys.push_back(ConstBufferKey{address.first, address.second, value});
     }
 
-    std::vector<BoundSamplerKey> flat_bound_samplers;
+    std::vector<BoundSamplerEntry> flat_bound_samplers;
     flat_bound_samplers.reserve(bound_samplers.size());
     for (const auto& [address, sampler] : bound_samplers) {
-        flat_bound_samplers.push_back(BoundSamplerKey{address, sampler});
+        flat_bound_samplers.push_back(BoundSamplerEntry{address, sampler});
     }
 
-    std::vector<BindlessSamplerKey> flat_bindless_samplers;
+    std::vector<SeparateSamplerEntry> flat_separate_samplers;
+    flat_separate_samplers.reserve(separate_samplers.size());
+    for (const auto& [key, sampler] : separate_samplers) {
+        SeparateSamplerEntry entry;
+        std::tie(entry.cbuf1, entry.cbuf2) = key.buffers;
+        std::tie(entry.offset1, entry.offset2) = key.offsets;
+        entry.sampler = sampler;
+        flat_separate_samplers.push_back(entry);
+    }
+
+    std::vector<BindlessSamplerEntry> flat_bindless_samplers;
     flat_bindless_samplers.reserve(bindless_samplers.size());
     for (const auto& [address, sampler] : bindless_samplers) {
         flat_bindless_samplers.push_back(
-            BindlessSamplerKey{address.first, address.second, sampler});
+            BindlessSamplerEntry{address.first, address.second, sampler});
     }
 
     return file.WriteArray(flat_keys.data(), flat_keys.size()) == flat_keys.size() &&
            file.WriteArray(flat_bound_samplers.data(), flat_bound_samplers.size()) ==
                flat_bound_samplers.size() &&
+           file.WriteArray(flat_separate_samplers.data(), flat_separate_samplers.size()) ==
+               flat_separate_samplers.size() &&
            file.WriteArray(flat_bindless_samplers.data(), flat_bindless_samplers.size()) ==
                flat_bindless_samplers.size();
 }
 
-ShaderDiskCacheOpenGL::ShaderDiskCacheOpenGL(Core::System& system) : system{system} {}
+ShaderDiskCacheOpenGL::ShaderDiskCacheOpenGL() = default;
 
 ShaderDiskCacheOpenGL::~ShaderDiskCacheOpenGL() = default;
 
+void ShaderDiskCacheOpenGL::BindTitleID(u64 title_id_) {
+    title_id = title_id_;
+}
+
 std::optional<std::vector<ShaderDiskCacheEntry>> ShaderDiskCacheOpenGL::LoadTransferable() {
     // Skip games without title id
-    const bool has_title_id = system.CurrentProcess()->GetTitleID() != 0;
-    if (!Settings::values.use_disk_shader_cache || !has_title_id) {
-        return {};
+    const bool has_title_id = title_id != 0;
+    if (!Settings::values.use_disk_shader_cache.GetValue() || !has_title_id) {
+        return std::nullopt;
     }
 
-    FileUtil::IOFile file(GetTransferablePath(), "rb");
+    Common::FS::IOFile file(GetTransferablePath(), "rb");
     if (!file.IsOpen()) {
         LOG_INFO(Render_OpenGL, "No transferable shader cache found");
         is_usable = true;
-        return {};
+        return std::nullopt;
     }
 
     u32 version{};
     if (file.ReadBytes(&version, sizeof(version)) != sizeof(version)) {
         LOG_ERROR(Render_OpenGL, "Failed to get transferable cache version, skipping it");
-        return {};
+        return std::nullopt;
     }
 
     if (version < NativeVersion) {
@@ -201,12 +239,12 @@ std::optional<std::vector<ShaderDiskCacheEntry>> ShaderDiskCacheOpenGL::LoadTran
         file.Close();
         InvalidateTransferable();
         is_usable = true;
-        return {};
+        return std::nullopt;
     }
     if (version > NativeVersion) {
         LOG_WARNING(Render_OpenGL, "Transferable shader cache was generated with a newer version "
                                    "of the emulator, skipping");
-        return {};
+        return std::nullopt;
     }
 
     // Version is valid, load the shaders
@@ -215,7 +253,7 @@ std::optional<std::vector<ShaderDiskCacheEntry>> ShaderDiskCacheOpenGL::LoadTran
         ShaderDiskCacheEntry& entry = entries.emplace_back();
         if (!entry.Load(file)) {
             LOG_ERROR(Render_OpenGL, "Failed to load transferable raw entry, skipping");
-            return {};
+            return std::nullopt;
         }
     }
 
@@ -228,7 +266,7 @@ std::vector<ShaderDiskCachePrecompiled> ShaderDiskCacheOpenGL::LoadPrecompiled()
         return {};
     }
 
-    FileUtil::IOFile file(GetPrecompiledPath(), "rb");
+    Common::FS::IOFile file(GetPrecompiledPath(), "rb");
     if (!file.IsOpen()) {
         LOG_INFO(Render_OpenGL, "No precompiled shader cache found");
         return {};
@@ -245,7 +283,7 @@ std::vector<ShaderDiskCachePrecompiled> ShaderDiskCacheOpenGL::LoadPrecompiled()
 }
 
 std::optional<std::vector<ShaderDiskCachePrecompiled>> ShaderDiskCacheOpenGL::LoadPrecompiledFile(
-    FileUtil::IOFile& file) {
+    Common::FS::IOFile& file) {
     // Read compressed file from disk and decompress to virtual precompiled cache file
     std::vector<u8> compressed(file.GetSize());
     file.ReadBytes(compressed.data(), compressed.size());
@@ -256,12 +294,12 @@ std::optional<std::vector<ShaderDiskCachePrecompiled>> ShaderDiskCacheOpenGL::Lo
     ShaderCacheVersionHash file_hash{};
     if (!LoadArrayFromPrecompiled(file_hash.data(), file_hash.size())) {
         precompiled_cache_virtual_file_offset = 0;
-        return {};
+        return std::nullopt;
     }
     if (GetShaderCacheVersionHash() != file_hash) {
         LOG_INFO(Render_OpenGL, "Precompiled cache is from another version of the emulator");
         precompiled_cache_virtual_file_offset = 0;
-        return {};
+        return std::nullopt;
     }
 
     std::vector<ShaderDiskCachePrecompiled> entries;
@@ -271,19 +309,19 @@ std::optional<std::vector<ShaderDiskCachePrecompiled>> ShaderDiskCacheOpenGL::Lo
         if (!LoadObjectFromPrecompiled(entry.unique_identifier) ||
             !LoadObjectFromPrecompiled(entry.binary_format) ||
             !LoadObjectFromPrecompiled(binary_size)) {
-            return {};
+            return std::nullopt;
         }
 
         entry.binary.resize(binary_size);
         if (!LoadArrayFromPrecompiled(entry.binary.data(), entry.binary.size())) {
-            return {};
+            return std::nullopt;
         }
     }
     return entries;
 }
 
 void ShaderDiskCacheOpenGL::InvalidateTransferable() {
-    if (!FileUtil::Delete(GetTransferablePath())) {
+    if (!Common::FS::Delete(GetTransferablePath())) {
         LOG_ERROR(Render_OpenGL, "Failed to invalidate transferable file={}",
                   GetTransferablePath());
     }
@@ -294,7 +332,7 @@ void ShaderDiskCacheOpenGL::InvalidatePrecompiled() {
     // Clear virtaul precompiled cache file
     precompiled_cache_virtual_file.Resize(0);
 
-    if (!FileUtil::Delete(GetPrecompiledPath())) {
+    if (!Common::FS::Delete(GetPrecompiledPath())) {
         LOG_ERROR(Render_OpenGL, "Failed to invalidate precompiled file={}", GetPrecompiledPath());
     }
 }
@@ -305,12 +343,12 @@ void ShaderDiskCacheOpenGL::SaveEntry(const ShaderDiskCacheEntry& entry) {
     }
 
     const u64 id = entry.unique_identifier;
-    if (stored_transferable.find(id) != stored_transferable.end()) {
+    if (stored_transferable.contains(id)) {
         // The shader already exists
         return;
     }
 
-    FileUtil::IOFile file = AppendTransferableFile();
+    Common::FS::IOFile file = AppendTransferableFile();
     if (!file.IsOpen()) {
         return;
     }
@@ -352,15 +390,15 @@ void ShaderDiskCacheOpenGL::SavePrecompiled(u64 unique_identifier, GLuint progra
     }
 }
 
-FileUtil::IOFile ShaderDiskCacheOpenGL::AppendTransferableFile() const {
+Common::FS::IOFile ShaderDiskCacheOpenGL::AppendTransferableFile() const {
     if (!EnsureDirectories()) {
         return {};
     }
 
     const auto transferable_path{GetTransferablePath()};
-    const bool existed = FileUtil::Exists(transferable_path);
+    const bool existed = Common::FS::Exists(transferable_path);
 
-    FileUtil::IOFile file(transferable_path, "ab");
+    Common::FS::IOFile file(transferable_path, "ab");
     if (!file.IsOpen()) {
         LOG_ERROR(Render_OpenGL, "Failed to open transferable cache in path={}", transferable_path);
         return {};
@@ -392,7 +430,7 @@ void ShaderDiskCacheOpenGL::SaveVirtualPrecompiledFile() {
         Common::Compression::CompressDataZSTDDefault(uncompressed.data(), uncompressed.size());
 
     const auto precompiled_path{GetPrecompiledPath()};
-    FileUtil::IOFile file(precompiled_path, "wb");
+    Common::FS::IOFile file(precompiled_path, "wb");
 
     if (!file.IsOpen()) {
         LOG_ERROR(Render_OpenGL, "Failed to open precompiled cache in path={}", precompiled_path);
@@ -406,24 +444,24 @@ void ShaderDiskCacheOpenGL::SaveVirtualPrecompiledFile() {
 
 bool ShaderDiskCacheOpenGL::EnsureDirectories() const {
     const auto CreateDir = [](const std::string& dir) {
-        if (!FileUtil::CreateDir(dir)) {
+        if (!Common::FS::CreateDir(dir)) {
             LOG_ERROR(Render_OpenGL, "Failed to create directory={}", dir);
             return false;
         }
         return true;
     };
 
-    return CreateDir(FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir)) &&
+    return CreateDir(Common::FS::GetUserPath(Common::FS::UserPath::ShaderDir)) &&
            CreateDir(GetBaseDir()) && CreateDir(GetTransferableDir()) &&
            CreateDir(GetPrecompiledDir());
 }
 
 std::string ShaderDiskCacheOpenGL::GetTransferablePath() const {
-    return FileUtil::SanitizePath(GetTransferableDir() + DIR_SEP_CHR + GetTitleID() + ".bin");
+    return Common::FS::SanitizePath(GetTransferableDir() + DIR_SEP_CHR + GetTitleID() + ".bin");
 }
 
 std::string ShaderDiskCacheOpenGL::GetPrecompiledPath() const {
-    return FileUtil::SanitizePath(GetPrecompiledDir() + DIR_SEP_CHR + GetTitleID() + ".bin");
+    return Common::FS::SanitizePath(GetPrecompiledDir() + DIR_SEP_CHR + GetTitleID() + ".bin");
 }
 
 std::string ShaderDiskCacheOpenGL::GetTransferableDir() const {
@@ -435,11 +473,11 @@ std::string ShaderDiskCacheOpenGL::GetPrecompiledDir() const {
 }
 
 std::string ShaderDiskCacheOpenGL::GetBaseDir() const {
-    return FileUtil::GetUserPath(FileUtil::UserPath::ShaderDir) + DIR_SEP "opengl";
+    return Common::FS::GetUserPath(Common::FS::UserPath::ShaderDir) + DIR_SEP "opengl";
 }
 
 std::string ShaderDiskCacheOpenGL::GetTitleID() const {
-    return fmt::format("{:016X}", system.CurrentProcess()->GetTitleID());
+    return fmt::format("{:016X}", title_id);
 }
 
 } // namespace OpenGL

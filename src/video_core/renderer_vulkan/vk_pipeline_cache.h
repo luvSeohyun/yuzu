@@ -17,15 +17,15 @@
 #include "common/common_types.h"
 #include "video_core/engines/const_buffer_engine_interface.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/rasterizer_cache.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
-#include "video_core/renderer_vulkan/vk_renderpass_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_decompiler.h"
-#include "video_core/renderer_vulkan/wrapper.h"
+#include "video_core/shader/async_shaders.h"
 #include "video_core/shader/memory_util.h"
 #include "video_core/shader/registry.h"
 #include "video_core/shader/shader_ir.h"
+#include "video_core/shader_cache.h"
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Core {
 class System;
@@ -33,35 +33,14 @@ class System;
 
 namespace Vulkan {
 
+class Device;
 class RasterizerVulkan;
 class VKComputePipeline;
 class VKDescriptorPool;
-class VKDevice;
-class VKFence;
 class VKScheduler;
 class VKUpdateDescriptorQueue;
 
-class CachedShader;
-using Shader = std::shared_ptr<CachedShader>;
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
-
-struct GraphicsPipelineCacheKey {
-    FixedPipelineState fixed_state;
-    RenderPassParams renderpass_params;
-    std::array<GPUVAddr, Maxwell::MaxShaderProgram> shaders;
-    u64 padding; // This is necessary for unique object representations
-
-    std::size_t Hash() const noexcept;
-
-    bool operator==(const GraphicsPipelineCacheKey& rhs) const noexcept;
-
-    bool operator!=(const GraphicsPipelineCacheKey& rhs) const noexcept {
-        return !operator==(rhs);
-    }
-};
-static_assert(std::has_unique_object_representations_v<GraphicsPipelineCacheKey>);
-static_assert(std::is_trivially_copyable_v<GraphicsPipelineCacheKey>);
-static_assert(std::is_trivially_constructible_v<GraphicsPipelineCacheKey>);
 
 struct ComputePipelineCacheKey {
     GPUVAddr shader;
@@ -102,22 +81,22 @@ struct hash<Vulkan::ComputePipelineCacheKey> {
 
 namespace Vulkan {
 
-class CachedShader final : public RasterizerCacheObject {
+class Shader {
 public:
-    explicit CachedShader(Core::System& system, Tegra::Engines::ShaderType stage, GPUVAddr gpu_addr,
-                          VAddr cpu_addr, VideoCommon::Shader::ProgramCode program_code,
-                          u32 main_offset);
-    ~CachedShader();
+    explicit Shader(Tegra::Engines::ConstBufferEngineInterface& engine_,
+                    Tegra::Engines::ShaderType stage_, GPUVAddr gpu_addr, VAddr cpu_addr_,
+                    VideoCommon::Shader::ProgramCode program_code, u32 main_offset_);
+    ~Shader();
 
     GPUVAddr GetGpuAddr() const {
         return gpu_addr;
     }
 
-    std::size_t GetSizeInBytes() const override {
-        return program_code.size() * sizeof(u64);
+    VideoCommon::Shader::ShaderIR& GetIR() {
+        return shader_ir;
     }
 
-    VideoCommon::Shader::ShaderIR& GetIR() {
+    const VideoCommon::Shader::ShaderIR& GetIR() const {
         return shader_ir;
     }
 
@@ -125,18 +104,11 @@ public:
         return registry;
     }
 
-    const VideoCommon::Shader::ShaderIR& GetIR() const {
-        return shader_ir;
-    }
-
     const ShaderEntries& GetEntries() const {
         return entries;
     }
 
 private:
-    static Tegra::Engines::ConstBufferEngineInterface& GetEngine(Core::System& system,
-                                                                 Tegra::Engines::ShaderType stage);
-
     GPUVAddr gpu_addr{};
     VideoCommon::Shader::ProgramCode program_code;
     VideoCommon::Shader::Registry registry;
@@ -144,45 +116,52 @@ private:
     ShaderEntries entries;
 };
 
-class VKPipelineCache final : public RasterizerCache<Shader> {
+class VKPipelineCache final : public VideoCommon::ShaderCache<Shader> {
 public:
-    explicit VKPipelineCache(Core::System& system, RasterizerVulkan& rasterizer,
-                             const VKDevice& device, VKScheduler& scheduler,
-                             VKDescriptorPool& descriptor_pool,
-                             VKUpdateDescriptorQueue& update_descriptor_queue,
-                             VKRenderPassCache& renderpass_cache);
-    ~VKPipelineCache();
+    explicit VKPipelineCache(RasterizerVulkan& rasterizer, Tegra::GPU& gpu,
+                             Tegra::Engines::Maxwell3D& maxwell3d,
+                             Tegra::Engines::KeplerCompute& kepler_compute,
+                             Tegra::MemoryManager& gpu_memory, const Device& device,
+                             VKScheduler& scheduler, VKDescriptorPool& descriptor_pool,
+                             VKUpdateDescriptorQueue& update_descriptor_queue);
+    ~VKPipelineCache() override;
 
-    std::array<Shader, Maxwell::MaxShaderProgram> GetShaders();
+    std::array<Shader*, Maxwell::MaxShaderProgram> GetShaders();
 
-    VKGraphicsPipeline& GetGraphicsPipeline(const GraphicsPipelineCacheKey& key);
+    VKGraphicsPipeline* GetGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                            u32 num_color_buffers,
+                                            VideoCommon::Shader::AsyncShaders& async_shaders);
 
     VKComputePipeline& GetComputePipeline(const ComputePipelineCacheKey& key);
 
-protected:
-    void Unregister(const Shader& shader) override;
+    void EmplacePipeline(std::unique_ptr<VKGraphicsPipeline> pipeline);
 
-    void FlushObjectInner(const Shader& object) override {}
+protected:
+    void OnShaderRemoval(Shader* shader) final;
 
 private:
     std::pair<SPIRVProgram, std::vector<VkDescriptorSetLayoutBinding>> DecompileShaders(
-        const GraphicsPipelineCacheKey& key);
+        const FixedPipelineState& fixed_state);
 
-    Core::System& system;
-    const VKDevice& device;
+    Tegra::GPU& gpu;
+    Tegra::Engines::Maxwell3D& maxwell3d;
+    Tegra::Engines::KeplerCompute& kepler_compute;
+    Tegra::MemoryManager& gpu_memory;
+
+    const Device& device;
     VKScheduler& scheduler;
     VKDescriptorPool& descriptor_pool;
     VKUpdateDescriptorQueue& update_descriptor_queue;
-    VKRenderPassCache& renderpass_cache;
 
-    Shader null_shader{};
-    Shader null_kernel{};
+    std::unique_ptr<Shader> null_shader;
+    std::unique_ptr<Shader> null_kernel;
 
-    std::array<Shader, Maxwell::MaxShaderProgram> last_shaders;
+    std::array<Shader*, Maxwell::MaxShaderProgram> last_shaders{};
 
     GraphicsPipelineCacheKey last_graphics_key;
     VKGraphicsPipeline* last_graphics_pipeline = nullptr;
 
+    std::mutex pipeline_cache;
     std::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<VKGraphicsPipeline>>
         graphics_cache;
     std::unordered_map<ComputePipelineCacheKey, std::unique_ptr<VKComputePipeline>> compute_cache;

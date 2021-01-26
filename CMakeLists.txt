@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.15)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/externals/cmake-modules")
@@ -13,11 +13,10 @@ project(yuzu)
 option(ENABLE_SDL2 "Enable the SDL2 frontend" ON)
 
 option(ENABLE_QT "Enable the Qt frontend" ON)
-CMAKE_DEPENDENT_OPTION(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" OFF "ENABLE_QT;MSVC" OFF)
+option(ENABLE_QT_TRANSLATION "Enable translations for the Qt frontend" OFF)
+CMAKE_DEPENDENT_OPTION(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" ON "ENABLE_QT;MSVC" OFF)
 
 option(ENABLE_WEB_SERVICE "Enable web services (telemetry, etc.)" ON)
-
-option(YUZU_USE_BUNDLED_UNICORN "Build/Download bundled Unicorn" ON)
 
 option(YUZU_USE_QT_WEB_ENGINE "Use QtWebEngine for web applet implementation" OFF)
 
@@ -25,9 +24,11 @@ option(YUZU_ENABLE_BOXCAT "Enable the Boxcat service, a yuzu high-level implemen
 
 option(ENABLE_CUBEB "Enables the cubeb audio backend" ON)
 
-option(ENABLE_VULKAN "Enables Vulkan backend" ON)
-
 option(USE_DISCORD_PRESENCE "Enables Discord Rich Presence" OFF)
+
+if (NOT ENABLE_WEB_SERVICE)
+    set(YUZU_ENABLE_BOXCAT OFF)
+endif()
 
 # Default to a Release build
 get_property(IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -114,12 +115,24 @@ if (NOT DEFINED ARCHITECTURE)
 endif()
 message(STATUS "Target architecture: ${ARCHITECTURE}")
 
+if (UNIX)
+    add_definitions(-DYUZU_UNIX=1)
+endif()
 
 # Configure C++ standard
 # ===========================
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# boost asio's concept usage doesn't play nicely with some compilers yet.
+add_definitions(-DBOOST_ASIO_DISABLE_CONCEPTS)
+if (MSVC)
+    add_compile_options(/std:c++latest)
+
+    # cubeb and boost still make use of deprecated result_of.
+    add_definitions(-D_HAS_DEPRECATED_RESULT_OF)
+else()
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+endif()
 
 # Output binaries to bin/
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
@@ -149,18 +162,14 @@ macro(yuzu_find_packages)
     # Capitalization matters here. We need the naming to match the generated paths from Conan
     set(REQUIRED_LIBS
     #    Cmake Pkg Prefix  Version     Conan Pkg
-        "Boost             1.71        boost/1.72.0"
-        "Catch2            2.11        catch2/2.11.0"
-        "fmt               6.2         fmt/6.2.0"
-        "OpenSSL           1.1         openssl/1.1.1f"
+        "Catch2            2.13        catch2/2.13.0"
+        "fmt               7.1         fmt/7.1.2"
     # can't use until https://github.com/bincrafters/community/issues/1173
         #"libzip            1.5         libzip/1.5.2@bincrafters/stable"
         "lz4               1.8         lz4/1.9.2"
-        "nlohmann_json     3.7         nlohmann_json/3.7.3"
-    # we need to be careful as the version check might be broken https://github.com/xiph/opus/issues/110
-        "opus              1.3         opus/1.3.1"
+        "nlohmann_json     3.8         nlohmann_json/3.8.0"
         "ZLIB              1.2         zlib/1.2.11"
-        "zstd              1.4         zstd/1.4.4"
+        "zstd              1.4         zstd/1.4.8"
     )
 
     foreach(PACKAGE ${REQUIRED_LIBS})
@@ -187,6 +196,22 @@ macro(yuzu_find_packages)
     unset(FN_FORCE_REQUIRED)
 endmacro()
 
+find_package(Boost 1.73.0 COMPONENTS context headers QUIET)
+if (Boost_FOUND)
+    set(Boost_LIBRARIES Boost::boost)
+    # Conditionally add Boost::context only if the active version of the Conan or system Boost package provides it
+    # The old version is missing Boost::context, so we want to avoid adding in that case
+    # The new version requires adding Boost::context to prevent linking issues
+    #
+    # This one is used by Conan on subsequent CMake configures, not the first configure.
+    if (TARGET Boost::context)
+        list(APPEND Boost_LIBRARIES Boost::context)
+    endif()
+else()
+    message(STATUS "Boost 1.73.0 or newer not found, falling back to Conan")
+    list(APPEND CONAN_REQUIRED_LIBS "boost/1.73.0")
+endif()
+
 # Attempt to locate any packages that are required and report the missing ones in CONAN_REQUIRED_LIBS
 yuzu_find_packages()
 
@@ -203,7 +228,7 @@ if(ENABLE_QT)
     set(QT_PREFIX_HINT)
     if(YUZU_USE_BUNDLED_QT)
         if ((MSVC_VERSION GREATER_EQUAL 1910 AND MSVC_VERSION LESS 1930) AND ARCHITECTURE_x86_64)
-            set(QT_VER qt-5.12.0-msvc2017_64)
+            set(QT_VER qt-5.12.8-msvc2017_64)
         else()
             message(FATAL_ERROR "No bundled Qt binaries for your toolchain. Disable YUZU_USE_BUNDLED_QT and provide your own.")
         endif()
@@ -214,7 +239,14 @@ if(ENABLE_QT)
 
         set(QT_PREFIX_HINT HINTS "${QT_PREFIX}")
     endif()
-    find_package(Qt5 5.9 COMPONENTS Widgets OpenGL ${QT_PREFIX_HINT})
+    find_package(Qt5 5.9 COMPONENTS Widgets ${QT_PREFIX_HINT})
+    if (YUZU_USE_QT_WEB_ENGINE)
+        find_package(Qt5 COMPONENTS WebEngineCore WebEngineWidgets)
+    endif()
+
+    if (ENABLE_QT_TRANSLATION)
+        find_package(Qt5 REQUIRED COMPONENTS LinguistTools ${QT_PREFIX_HINT})
+    endif()
     if (NOT Qt5_FOUND)
         list(APPEND CONAN_REQUIRED_LIBS "qt/5.14.1@bincrafters/stable")
     endif()
@@ -229,7 +261,7 @@ if(ENABLE_SDL2)
     find_package(SDL2)
     if (NOT SDL2_FOUND)
         # otherwise add this to the list of libraries to install
-        list(APPEND CONAN_REQUIRED_LIBS "sdl2/2.0.12@bincrafters/stable")
+        list(APPEND CONAN_REQUIRED_LIBS "sdl2/2.0.14@bincrafters/stable")
     endif()
 endif()
 
@@ -249,6 +281,7 @@ if (CONAN_REQUIRED_LIBS)
         libzip:with_openssl=False
         libzip:enable_windows_crypto=False
     )
+
     conan_check(VERSION 1.24.0 REQUIRED)
     # Add the bincrafters remote
     conan_add_remote(NAME bincrafters
@@ -283,11 +316,22 @@ if (CONAN_REQUIRED_LIBS)
     # this time with required, so we bail if its not found.
     yuzu_find_packages(FORCE_REQUIRED)
 
+    if (NOT Boost_FOUND)
+        find_package(Boost 1.73.0 REQUIRED COMPONENTS context headers)
+        set(Boost_LIBRARIES Boost::boost)
+        # Conditionally add Boost::context only if the active version of the Conan Boost package provides it
+        # The old version is missing Boost::context, so we want to avoid adding in that case
+        # The new version requires adding Boost::context to prevent linking issues
+        if (TARGET Boost::context)
+            list(APPEND Boost_LIBRARIES Boost::context)
+        endif()
+    endif()
+
     # Due to issues with variable scopes in functions, we need to also find_package(qt5) outside of the function
     if(ENABLE_QT)
         list(APPEND CMAKE_MODULE_PATH "${CONAN_QT_ROOT_RELEASE}")
         list(APPEND CMAKE_PREFIX_PATH "${CONAN_QT_ROOT_RELEASE}")
-        find_package(Qt5 5.9 REQUIRED COMPONENTS Widgets OpenGL)
+        find_package(Qt5 5.9 REQUIRED COMPONENTS Widgets)
         if (YUZU_USE_QT_WEB_ENGINE)
             find_package(Qt5 REQUIRED COMPONENTS WebEngineCore WebEngineWidgets)
         endif()
@@ -312,15 +356,6 @@ elseif (TARGET Boost::boost)
     add_library(boost ALIAS Boost::boost)
 endif()
 
-if (NOT TARGET OpenSSL::SSL)
-    set_target_properties(OpenSSL::OpenSSL PROPERTIES IMPORTED_GLOBAL TRUE)
-    add_library(OpenSSL::SSL ALIAS OpenSSL::OpenSSL)
-endif()
-if (NOT TARGET OpenSSL::Crypto)
-    set_target_properties(OpenSSL::OpenSSL PROPERTIES IMPORTED_GLOBAL TRUE)
-    add_library(OpenSSL::Crypto ALIAS OpenSSL::OpenSSL)
-endif()
-
 if (TARGET sdl2::sdl2)
     # imported from the conan generated sdl2Config.cmake
     set_target_properties(sdl2::sdl2 PROPERTIES IMPORTED_GLOBAL TRUE)
@@ -338,84 +373,33 @@ elseif(SDL2_FOUND)
     target_link_libraries(SDL2 INTERFACE "${SDL2_LIBRARIES}")
 endif()
 
+# Ensure libusb is properly configured (based on dolphin libusb include)
+if(NOT APPLE)
+    include(FindPkgConfig)
+    find_package(LibUSB)
+endif()
+if (NOT LIBUSB_FOUND)
+    add_subdirectory(externals/libusb)
+    set(LIBUSB_INCLUDE_DIR "")
+    set(LIBUSB_LIBRARIES usb)
+endif()
+
+# Use system installed ffmpeg.
+if (NOT MSVC)
+    find_package(FFmpeg REQUIRED)
+else()
+    set(FFMPEG_EXT_NAME "ffmpeg-4.2.1")
+    set(FFMPEG_PATH "${CMAKE_BINARY_DIR}/externals/${FFMPEG_EXT_NAME}")
+    download_bundled_external("ffmpeg/" ${FFMPEG_EXT_NAME} "")
+    set(FFMPEG_FOUND YES)
+    set(FFMPEG_INCLUDE_DIR "${FFMPEG_PATH}/include" CACHE PATH "Path to FFmpeg headers" FORCE)
+    set(FFMPEG_LIBRARY_DIR "${FFMPEG_PATH}/bin" CACHE PATH "Path to FFmpeg library" FORCE)
+    set(FFMPEG_DLL_DIR "${FFMPEG_PATH}/bin" CACHE PATH "Path to FFmpeg dll's" FORCE)
+endif()
+
 # Prefer the -pthread flag on Linux.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
-
-# If unicorn isn't found, msvc -> download bundled unicorn; everyone else -> build external
-if (YUZU_USE_BUNDLED_UNICORN)
-    if (MSVC)
-        message(STATUS "unicorn not found, falling back to bundled")
-        # Detect toolchain and platform
-        if ((MSVC_VERSION GREATER_EQUAL 1910 AND MSVC_VERSION LESS 1930) AND ARCHITECTURE_x86_64)
-            set(UNICORN_VER "unicorn-yuzu")
-        else()
-            message(FATAL_ERROR "No bundled Unicorn binaries for your toolchain. Disable YUZU_USE_BUNDLED_UNICORN and provide your own.")
-        endif()
-
-        if (DEFINED UNICORN_VER)
-            download_bundled_external("unicorn/" ${UNICORN_VER} UNICORN_PREFIX)
-        endif()
-
-        if (DEFINED UNICORN_VER)
-            download_bundled_external("unicorn/" ${UNICORN_VER} UNICORN_PREFIX)
-        endif()
-
-        set(UNICORN_FOUND YES)
-        set(LIBUNICORN_INCLUDE_DIR "${UNICORN_PREFIX}/include" CACHE PATH "Path to Unicorn headers" FORCE)
-        set(LIBUNICORN_LIBRARY "${UNICORN_PREFIX}/lib/x64/unicorn_dynload.lib" CACHE PATH "Path to Unicorn library" FORCE)
-        set(UNICORN_DLL_DIR "${UNICORN_PREFIX}/lib/x64/" CACHE PATH "Path to unicorn.dll" FORCE)
-    else()
-        message(STATUS "unicorn not found, falling back to externals")
-        if (MINGW)
-            set(UNICORN_LIB_NAME "unicorn.a")
-        else()
-            set(UNICORN_LIB_NAME "libunicorn.a")
-        endif()
-
-        set(UNICORN_FOUND YES)
-        set(UNICORN_PREFIX ${PROJECT_SOURCE_DIR}/externals/unicorn)
-        set(LIBUNICORN_LIBRARY "${UNICORN_PREFIX}/${UNICORN_LIB_NAME}" CACHE PATH "Path to Unicorn library" FORCE)
-        set(LIBUNICORN_INCLUDE_DIR "${UNICORN_PREFIX}/include" CACHE PATH "Path to Unicorn headers" FORCE)
-        set(UNICORN_DLL_DIR "${UNICORN_PREFIX}/" CACHE PATH "Path to unicorn dynamic library" FORCE)
-
-        find_package(PythonInterp 2.7 REQUIRED)
-
-        if (MINGW)
-            # Intentionally call the unicorn makefile directly instead of using make.sh so that we can override the
-            # UNAME_S makefile variable to MINGW. This way we don't have to hack at the uname binary to build
-            # Additionally, overriding DO_WINDOWS_EXPORT prevents unicorn from patching the static unicorn.a by using msvc and cmd,
-            # which are both things we don't have in a mingw cross compiling environment.
-            add_custom_command(OUTPUT ${LIBUNICORN_LIBRARY}
-                COMMAND ${CMAKE_COMMAND} -E env UNICORN_ARCHS="aarch64" PYTHON="${PYTHON_EXECUTABLE}" CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-gcc-ar RANLIB=x86_64-w64-mingw32-gcc-ranlib make UNAME_S=MINGW DO_WINDOWS_EXPORT=0
-                WORKING_DIRECTORY ${UNICORN_PREFIX}
-            )
-        else()
-            add_custom_command(OUTPUT ${LIBUNICORN_LIBRARY}
-                COMMAND ${CMAKE_COMMAND} -E env UNICORN_ARCHS="aarch64" PYTHON="${PYTHON_EXECUTABLE}" /bin/sh make.sh macos-universal-no
-                WORKING_DIRECTORY ${UNICORN_PREFIX}
-            )
-        endif()
-
-        # ALL makes this custom target build every time
-        # but it won't actually build if LIBUNICORN_LIBRARY is up to date
-        add_custom_target(unicorn-build ALL
-            DEPENDS ${LIBUNICORN_LIBRARY}
-        )
-        unset(UNICORN_LIB_NAME)
-    endif()
-else()
-    find_package(Unicorn REQUIRED)
-endif()
-
-if (UNICORN_FOUND)
-    add_library(unicorn INTERFACE)
-    add_dependencies(unicorn unicorn-build)
-    target_link_libraries(unicorn INTERFACE "${LIBUNICORN_LIBRARY}")
-    target_include_directories(unicorn INTERFACE "${LIBUNICORN_INCLUDE_DIR}")
-else()
-    message(FATAL_ERROR "Could not find or build unicorn which is required.")
-endif()
 
 # Platform-specific library requirements
 # ======================================
@@ -440,7 +424,7 @@ endif()
 # against all the src files. This should be used before making a pull request.
 # =======================================================================
 
-set(CLANG_FORMAT_POSTFIX "-6.0")
+set(CLANG_FORMAT_POSTFIX "-10")
 find_program(CLANG_FORMAT
     NAMES clang-format${CLANG_FORMAT_POSTFIX}
           clang-format

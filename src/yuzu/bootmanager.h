@@ -6,10 +6,12 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 
 #include <QImage>
 #include <QThread>
+#include <QTouchEvent>
 #include <QWidget>
 #include <QWindow>
 
@@ -20,8 +22,11 @@
 class GRenderWindow;
 class GMainWindow;
 class QKeyEvent;
-class QTouchEvent;
 class QStringList;
+
+namespace InputCommon {
+class InputSubsystem;
+}
 
 namespace VideoCore {
 enum class LoadCallbackStage;
@@ -59,6 +64,12 @@ public:
         this->running = running;
         lock.unlock();
         running_cv.notify_all();
+        if (!running) {
+            running_wait.Set();
+            /// Wait until effectively paused
+            while (running_guard)
+                ;
+        }
     }
 
     /**
@@ -84,6 +95,8 @@ private:
     std::atomic_bool stop_run{false};
     std::mutex running_mutex;
     std::condition_variable running_cv;
+    Common::Event running_wait{};
+    std::atomic_bool running_guard{false};
 
 signals:
     /**
@@ -113,11 +126,12 @@ class GRenderWindow : public QWidget, public Core::Frontend::EmuWindow {
     Q_OBJECT
 
 public:
-    GRenderWindow(GMainWindow* parent, EmuThread* emu_thread);
+    explicit GRenderWindow(GMainWindow* parent, EmuThread* emu_thread_,
+                           std::shared_ptr<InputCommon::InputSubsystem> input_subsystem_);
     ~GRenderWindow() override;
 
     // EmuWindow implementation.
-    void PollEvents() override;
+    void OnFrameDisplayed() override;
     bool IsShown() const override;
     std::unique_ptr<Core::Frontend::GraphicsContext> CreateSharedContext() const override;
 
@@ -148,9 +162,17 @@ public:
     /// Destroy the previous run's child_widget which should also destroy the child_window
     void ReleaseRenderTarget();
 
+    bool IsLoadingComplete() const;
+
     void CaptureScreenshot(u32 res_scale, const QString& screenshot_path);
 
     std::pair<u32, u32> ScaleTouch(const QPointF& pos) const;
+
+    /**
+     * Instructs the window to re-launch the application using the specified program_index.
+     * @param program_index Specifies the index within the application of the program to launch.
+     */
+    void ExecuteProgram(std::size_t program_index);
 
 public slots:
     void OnEmulationStarting(EmuThread* emu_thread);
@@ -161,11 +183,17 @@ signals:
     /// Emitted when the window is closed
     void Closed();
     void FirstFrameDisplayed();
+    void ExecuteProgramSignal(std::size_t program_index);
+    void MouseActivity();
 
 private:
     void TouchBeginEvent(const QTouchEvent* event);
     void TouchUpdateEvent(const QTouchEvent* event);
     void TouchEndEvent();
+
+    bool TouchStart(const QTouchEvent::TouchPoint& touch_point);
+    bool TouchUpdate(const QTouchEvent::TouchPoint& touch_point);
+    bool TouchExist(std::size_t id, const QList<QTouchEvent::TouchPoint>& touch_points) const;
 
     void OnMinimalClientAreaChangeRequest(std::pair<u32, u32> minimal_size) override;
 
@@ -175,6 +203,7 @@ private:
     QStringList GetUnsupportedGLExtensions() const;
 
     EmuThread* emu_thread;
+    std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
 
     // Main context that will be shared with all other contexts that are requested.
     // If this is used in a shared context setting, then this should not be used directly, but
@@ -190,6 +219,9 @@ private:
 
     bool first_frame = false;
 
+    std::array<std::size_t, 16> touch_ids{};
+
 protected:
     void showEvent(QShowEvent* event) override;
+    bool eventFilter(QObject* object, QEvent* event) override;
 };

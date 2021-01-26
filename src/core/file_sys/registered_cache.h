@@ -34,6 +34,7 @@ using VfsCopyFunction = std::function<bool(const VirtualFile&, const VirtualFile
 
 enum class InstallResult {
     Success,
+    OverwriteExisting,
     ErrorAlreadyExists,
     ErrorCopyFailed,
     ErrorMetaFailed,
@@ -66,18 +67,18 @@ public:
     virtual void Refresh() = 0;
 
     virtual bool HasEntry(u64 title_id, ContentRecordType type) const = 0;
-    virtual bool HasEntry(ContentProviderEntry entry) const;
+    bool HasEntry(ContentProviderEntry entry) const;
 
     virtual std::optional<u32> GetEntryVersion(u64 title_id) const = 0;
 
     virtual VirtualFile GetEntryUnparsed(u64 title_id, ContentRecordType type) const = 0;
-    virtual VirtualFile GetEntryUnparsed(ContentProviderEntry entry) const;
+    VirtualFile GetEntryUnparsed(ContentProviderEntry entry) const;
 
     virtual VirtualFile GetEntryRaw(u64 title_id, ContentRecordType type) const = 0;
-    virtual VirtualFile GetEntryRaw(ContentProviderEntry entry) const;
+    VirtualFile GetEntryRaw(ContentProviderEntry entry) const;
 
     virtual std::unique_ptr<NCA> GetEntry(u64 title_id, ContentRecordType type) const = 0;
-    virtual std::unique_ptr<NCA> GetEntry(ContentProviderEntry entry) const;
+    std::unique_ptr<NCA> GetEntry(ContentProviderEntry entry) const;
 
     virtual std::vector<ContentProviderEntry> ListEntries() const;
 
@@ -88,7 +89,7 @@ public:
 
 protected:
     // A single instance of KeyManager to be used by GetEntry()
-    Core::Crypto::KeyManager keys;
+    Core::Crypto::KeyManager& keys = Core::Crypto::KeyManager::Instance();
 };
 
 class PlaceholderCache {
@@ -132,9 +133,9 @@ public:
     // Parsing function defines the conversion from raw file to NCA. If there are other steps
     // besides creating the NCA from the file (e.g. NAX0 on SD Card), that should go in a custom
     // parsing function.
-    explicit RegisteredCache(VirtualDir dir,
-                             ContentProviderParsingFunction parsing_function =
-                                 [](const VirtualFile& file, const NcaID& id) { return file; });
+    explicit RegisteredCache(
+        VirtualDir dir, ContentProviderParsingFunction parsing_function =
+                            [](const VirtualFile& file, const NcaID& id) { return file; });
     ~RegisteredCache() override;
 
     void Refresh() override;
@@ -167,6 +168,9 @@ public:
     // TODO(DarkLordZach): Author real meta-type NCAs and install those.
     InstallResult InstallEntry(const NCA& nca, TitleType type, bool overwrite_if_exists = false,
                                const VfsCopyFunction& copy = &VfsRawCopy);
+
+    // Removes an existing entry based on title id
+    bool RemoveExistingEntry(u64 title_id) const;
 
 private:
     template <typename T>

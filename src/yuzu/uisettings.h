@@ -24,19 +24,19 @@ struct Shortcut {
     ContextualShortcut shortcut;
 };
 
-using Themes = std::array<std::pair<const char*, const char*>, 4>;
+using Themes = std::array<std::pair<const char*, const char*>, 6>;
 extern const Themes themes;
 
 struct GameDir {
     QString path;
-    bool deep_scan;
-    bool expanded;
+    bool deep_scan = false;
+    bool expanded = false;
     bool operator==(const GameDir& rhs) const {
         return path == rhs.path;
-    };
+    }
     bool operator!=(const GameDir& rhs) const {
         return !operator==(rhs);
-    };
+    }
 };
 
 struct Values {
@@ -66,15 +66,16 @@ struct Values {
     // Discord RPC
     bool enable_discord_presence;
 
+    bool enable_screenshot_save_as;
     u16 screenshot_resolution_factor;
 
     QString roms_path;
     QString symbols_path;
-    QString screenshot_path;
     QString game_dir_deprecated;
     bool game_dir_deprecated_deepscan;
     QVector<UISettings::GameDir> game_dirs;
     QStringList recent_files;
+    QString language;
 
     QString theme;
 
@@ -86,9 +87,6 @@ struct Values {
     // logging
     bool show_console;
 
-    // Controllers
-    int profile_index;
-
     // Game List
     bool show_add_ons;
     uint32_t icon_size;
@@ -99,6 +97,7 @@ struct Values {
 };
 
 extern Values values;
+
 } // namespace UISettings
 
 Q_DECLARE_METATYPE(UISettings::GameDir*);

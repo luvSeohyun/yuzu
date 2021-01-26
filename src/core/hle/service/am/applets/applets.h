@@ -17,6 +17,7 @@ class System;
 }
 
 namespace Core::Frontend {
+class ControllerApplet;
 class ECommerceApplet;
 class ErrorApplet;
 class ParentalControlsApplet;
@@ -49,13 +50,13 @@ enum class AppletId : u32 {
     ProfileSelect = 0x10,
     SoftwareKeyboard = 0x11,
     MiiEdit = 0x12,
-    LibAppletWeb = 0x13,
-    LibAppletShop = 0x14,
+    Web = 0x13,
+    Shop = 0x14,
     PhotoViewer = 0x15,
     Settings = 0x16,
-    LibAppletOff = 0x17,
-    LibAppletWhitelisted = 0x18,
-    LibAppletAuth = 0x19,
+    OfflineWeb = 0x17,
+    LoginShare = 0x18,
+    WebAuth = 0x19,
     MyPage = 0x1A,
 };
 
@@ -155,19 +156,19 @@ protected:
 };
 
 struct AppletFrontendSet {
-    using ParentalControlsApplet = std::unique_ptr<Core::Frontend::ParentalControlsApplet>;
+    using ControllerApplet = std::unique_ptr<Core::Frontend::ControllerApplet>;
     using ErrorApplet = std::unique_ptr<Core::Frontend::ErrorApplet>;
+    using ParentalControlsApplet = std::unique_ptr<Core::Frontend::ParentalControlsApplet>;
     using PhotoViewer = std::unique_ptr<Core::Frontend::PhotoViewerApplet>;
     using ProfileSelect = std::unique_ptr<Core::Frontend::ProfileSelectApplet>;
     using SoftwareKeyboard = std::unique_ptr<Core::Frontend::SoftwareKeyboardApplet>;
     using WebBrowser = std::unique_ptr<Core::Frontend::WebBrowserApplet>;
-    using ECommerceApplet = std::unique_ptr<Core::Frontend::ECommerceApplet>;
 
     AppletFrontendSet();
-    AppletFrontendSet(ParentalControlsApplet parental_controls, ErrorApplet error,
-                      PhotoViewer photo_viewer, ProfileSelect profile_select,
-                      SoftwareKeyboard software_keyboard, WebBrowser web_browser,
-                      ECommerceApplet e_commerce);
+    AppletFrontendSet(ControllerApplet controller_applet, ErrorApplet error_applet,
+                      ParentalControlsApplet parental_controls_applet, PhotoViewer photo_viewer_,
+                      ProfileSelect profile_select_, SoftwareKeyboard software_keyboard_,
+                      WebBrowser web_browser_);
     ~AppletFrontendSet();
 
     AppletFrontendSet(const AppletFrontendSet&) = delete;
@@ -176,13 +177,13 @@ struct AppletFrontendSet {
     AppletFrontendSet(AppletFrontendSet&&) noexcept;
     AppletFrontendSet& operator=(AppletFrontendSet&&) noexcept;
 
-    ParentalControlsApplet parental_controls;
+    ControllerApplet controller;
     ErrorApplet error;
+    ParentalControlsApplet parental_controls;
     PhotoViewer photo_viewer;
     ProfileSelect profile_select;
     SoftwareKeyboard software_keyboard;
     WebBrowser web_browser;
-    ECommerceApplet e_commerce;
 };
 
 class AppletManager {

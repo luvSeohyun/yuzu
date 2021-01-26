@@ -9,6 +9,7 @@
 #include "core/hle/kernel/writable_event.h"
 #include "core/hle/service/nifm/nifm.h"
 #include "core/hle/service/service.h"
+#include "core/network/network.h"
 #include "core/settings.h"
 
 namespace Service::NIFM {
@@ -22,7 +23,7 @@ enum class RequestState : u32 {
 
 class IScanRequest final : public ServiceFramework<IScanRequest> {
 public:
-    explicit IScanRequest() : ServiceFramework("IScanRequest") {
+    explicit IScanRequest(Core::System& system_) : ServiceFramework{system_, "IScanRequest"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, nullptr, "Submit"},
@@ -39,7 +40,7 @@ public:
 
 class IRequest final : public ServiceFramework<IRequest> {
 public:
-    explicit IRequest(Core::System& system) : ServiceFramework("IRequest") {
+    explicit IRequest(Core::System& system_) : ServiceFramework{system_, "IRequest"} {
         static const FunctionInfo functions[] = {
             {0, &IRequest::GetRequestState, "GetRequestState"},
             {1, &IRequest::GetResult, "GetResult"},
@@ -61,7 +62,7 @@ public:
             {18, nullptr, "SetRequirementByRevision"},
             {19, nullptr, "GetRequirement"},
             {20, nullptr, "GetRevision"},
-            {21, nullptr, "GetAppletInfo"},
+            {21, &IRequest::GetAppletInfo, "GetAppletInfo"},
             {22, nullptr, "GetAdditionalInfo"},
             {23, nullptr, "SetKeptInSleep"},
             {24, nullptr, "RegisterSocketDescriptor"},
@@ -124,12 +125,22 @@ private:
         rb.Push(RESULT_SUCCESS);
     }
 
+    void GetAppletInfo(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_NIFM, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 8};
+        rb.Push(RESULT_SUCCESS);
+        rb.Push<u32>(0);
+        rb.Push<u32>(0);
+        rb.Push<u32>(0);
+    }
+
     Kernel::EventPair event1, event2;
 };
 
 class INetworkProfile final : public ServiceFramework<INetworkProfile> {
 public:
-    explicit INetworkProfile() : ServiceFramework("INetworkProfile") {
+    explicit INetworkProfile(Core::System& system_) : ServiceFramework{system_, "INetworkProfile"} {
         static const FunctionInfo functions[] = {
             {0, nullptr, "Update"},
             {1, nullptr, "PersistOld"},
@@ -141,7 +152,7 @@ public:
 
 class IGeneralService final : public ServiceFramework<IGeneralService> {
 public:
-    IGeneralService(Core::System& system);
+    explicit IGeneralService(Core::System& system_);
 
 private:
     void GetClientId(Kernel::HLERequestContext& ctx) {
@@ -158,7 +169,7 @@ private:
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
 
         rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IScanRequest>();
+        rb.PushIpcInterface<IScanRequest>(system);
     }
     void CreateRequest(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_NIFM, "called");
@@ -174,6 +185,16 @@ private:
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);
     }
+    void GetCurrentIpAddress(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_NIFM, "(STUBBED) called");
+
+        const auto [ipv4, error] = Network::GetHostIPv4Address();
+        UNIMPLEMENTED_IF(error != Network::Errno::SUCCESS);
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(RESULT_SUCCESS);
+        rb.PushRaw(ipv4);
+    }
     void CreateTemporaryNetworkProfile(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_NIFM, "called");
 
@@ -186,7 +207,7 @@ private:
         IPC::ResponseBuilder rb{ctx, 6, 0, 1};
 
         rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<INetworkProfile>();
+        rb.PushIpcInterface<INetworkProfile>(system);
         rb.PushRaw<u128>(uuid);
     }
     void IsWirelessCommunicationEnabled(Kernel::HLERequestContext& ctx) {
@@ -218,11 +239,10 @@ private:
             rb.Push<u8>(1);
         }
     }
-    Core::System& system;
 };
 
-IGeneralService::IGeneralService(Core::System& system)
-    : ServiceFramework("IGeneralService"), system(system) {
+IGeneralService::IGeneralService(Core::System& system_)
+    : ServiceFramework{system_, "IGeneralService"} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {1, &IGeneralService::GetClientId, "GetClientId"},
@@ -235,7 +255,7 @@ IGeneralService::IGeneralService(Core::System& system)
         {9, nullptr, "SetNetworkProfile"},
         {10, &IGeneralService::RemoveNetworkProfile, "RemoveNetworkProfile"},
         {11, nullptr, "GetScanDataOld"},
-        {12, nullptr, "GetCurrentIpAddress"},
+        {12, &IGeneralService::GetCurrentIpAddress, "GetCurrentIpAddress"},
         {13, nullptr, "GetCurrentAccessPointOld"},
         {14, &IGeneralService::CreateTemporaryNetworkProfile, "CreateTemporaryNetworkProfile"},
         {15, nullptr, "GetCurrentIpConfigInfo"},
@@ -275,8 +295,8 @@ IGeneralService::IGeneralService(Core::System& system)
 
 class NetworkInterface final : public ServiceFramework<NetworkInterface> {
 public:
-    explicit NetworkInterface(const char* name, Core::System& system)
-        : ServiceFramework{name}, system(system) {
+    explicit NetworkInterface(const char* name, Core::System& system_)
+        : ServiceFramework{system_, name} {
         static const FunctionInfo functions[] = {
             {4, &NetworkInterface::CreateGeneralServiceOld, "CreateGeneralServiceOld"},
             {5, &NetworkInterface::CreateGeneralService, "CreateGeneralService"},
@@ -284,6 +304,7 @@ public:
         RegisterHandlers(functions);
     }
 
+private:
     void CreateGeneralServiceOld(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_NIFM, "called");
 
@@ -299,9 +320,6 @@ public:
         rb.Push(RESULT_SUCCESS);
         rb.PushIpcInterface<IGeneralService>(system);
     }
-
-private:
-    Core::System& system;
 };
 
 void InstallInterfaces(SM::ServiceManager& service_manager, Core::System& system) {

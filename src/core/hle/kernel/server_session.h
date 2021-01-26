@@ -10,7 +10,8 @@
 #include <vector>
 
 #include "common/threadsafe_queue.h"
-#include "core/hle/kernel/synchronization_object.h"
+#include "core/hle/kernel/k_synchronization_object.h"
+#include "core/hle/kernel/service_thread.h"
 #include "core/hle/result.h"
 
 namespace Core::Memory {
@@ -18,8 +19,9 @@ class Memory;
 }
 
 namespace Core::Timing {
+class CoreTiming;
 struct EventType;
-}
+} // namespace Core::Timing
 
 namespace Kernel {
 
@@ -41,7 +43,9 @@ class Thread;
  * After the server replies to the request, the response is marshalled back to the caller's
  * TLS buffer and control is transferred back to it.
  */
-class ServerSession final : public SynchronizationObject {
+class ServerSession final : public KSynchronizationObject {
+    friend class ServiceThread;
+
 public:
     explicit ServerSession(KernelCore& kernel);
     ~ServerSession() override;
@@ -73,8 +77,6 @@ public:
         return parent.get();
     }
 
-    bool IsSignaled() const override;
-
     /**
      * Sets the HLE handler for the session. This handler will be called to service IPC requests
      * instead of the regular IPC machinery. (The regular IPC machinery is currently not
@@ -87,16 +89,14 @@ public:
     /**
      * Handle a sync request from the emulated application.
      *
-     * @param thread Thread that initiated the request.
-     * @param memory Memory context to handle the sync request under.
+     * @param thread      Thread that initiated the request.
+     * @param memory      Memory context to handle the sync request under.
+     * @param core_timing Core timing context to schedule the request event under.
      *
      * @returns ResultCode from the operation.
      */
-    ResultCode HandleSyncRequest(std::shared_ptr<Thread> thread, Core::Memory::Memory& memory);
-
-    bool ShouldWait(const Thread* thread) const override;
-
-    void Acquire(Thread* thread) override;
+    ResultCode HandleSyncRequest(std::shared_ptr<Thread> thread, Core::Memory::Memory& memory,
+                                 Core::Timing::CoreTiming& core_timing);
 
     /// Called when a client disconnection occurs.
     void ClientDisconnected();
@@ -124,12 +124,14 @@ public:
         convert_to_domain = true;
     }
 
+    bool IsSignaled() const override;
+
 private:
     /// Queues a sync request from the emulated application.
     ResultCode QueueSyncRequest(std::shared_ptr<Thread> thread, Core::Memory::Memory& memory);
 
     /// Completes a sync request from the emulated application.
-    ResultCode CompleteSyncRequest();
+    ResultCode CompleteSyncRequest(HLERequestContext& context);
 
     /// Handles a SyncRequest to a domain, forwarding the request to the proper object or closing an
     /// object handle.
@@ -160,11 +162,8 @@ private:
     /// The name of this session (optional)
     std::string name;
 
-    /// Core timing event used to schedule the service request at some point in the future
-    std::shared_ptr<Core::Timing::EventType> request_event;
-
-    /// Queue of scheduled service requests
-    Common::MPSCQueue<std::shared_ptr<Kernel::HLERequestContext>> request_queue;
+    /// Thread to dispatch service requests
+    std::weak_ptr<ServiceThread> service_thread;
 };
 
 } // namespace Kernel

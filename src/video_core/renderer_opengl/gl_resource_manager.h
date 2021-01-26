@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <string_view>
 #include <utility>
 #include <glad/glad.h>
 #include "common/common_types.h"
@@ -127,7 +128,7 @@ public:
         return *this;
     }
 
-    void Create(const char* source, GLenum type);
+    void Create(std::string_view source, GLenum type);
 
     void Release();
 
@@ -175,6 +176,12 @@ public:
 
     ~OGLAssemblyProgram() {
         Release();
+    }
+
+    OGLAssemblyProgram& operator=(OGLAssemblyProgram&& o) noexcept {
+        Release();
+        handle = std::exchange(o.handle, 0);
+        return *this;
     }
 
     /// Deletes the internal OpenGL resource

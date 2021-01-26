@@ -25,6 +25,8 @@
 
 namespace Core {
 
+namespace Telemetry = Common::Telemetry;
+
 static u64 GenerateTelemetryId() {
     u64 telemetry_id{};
 
@@ -70,12 +72,12 @@ static const char* TranslateGPUAccuracyLevel(Settings::GPUAccuracy backend) {
 
 u64 GetTelemetryId() {
     u64 telemetry_id{};
-    const std::string filename{FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) +
+    const std::string filename{Common::FS::GetUserPath(Common::FS::UserPath::ConfigDir) +
                                "telemetry_id"};
 
-    bool generate_new_id = !FileUtil::Exists(filename);
+    bool generate_new_id = !Common::FS::Exists(filename);
     if (!generate_new_id) {
-        FileUtil::IOFile file(filename, "rb");
+        Common::FS::IOFile file(filename, "rb");
         if (!file.IsOpen()) {
             LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
             return {};
@@ -88,7 +90,7 @@ u64 GetTelemetryId() {
     }
 
     if (generate_new_id) {
-        FileUtil::IOFile file(filename, "wb");
+        Common::FS::IOFile file(filename, "wb");
         if (!file.IsOpen()) {
             LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
             return {};
@@ -102,10 +104,10 @@ u64 GetTelemetryId() {
 
 u64 RegenerateTelemetryId() {
     const u64 new_telemetry_id{GenerateTelemetryId()};
-    const std::string filename{FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) +
+    const std::string filename{Common::FS::GetUserPath(Common::FS::UserPath::ConfigDir) +
                                "telemetry_id"};
 
-    FileUtil::IOFile file(filename, "wb");
+    Common::FS::IOFile file(filename, "wb");
     if (!file.IsOpen()) {
         LOG_ERROR(Core, "failed to open telemetry_id: {}", filename);
         return {};
@@ -145,7 +147,9 @@ TelemetrySession::~TelemetrySession() {
     }
 }
 
-void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
+void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader,
+                                      const Service::FileSystem::FileSystemController& fsc,
+                                      const FileSys::ContentProvider& content_provider) {
     // Log one-time top-level information
     AddField(Telemetry::FieldType::None, "TelemetryId", GetTelemetryId());
 
@@ -165,7 +169,10 @@ void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
         app_loader.ReadTitle(name);
 
         if (name.empty()) {
-            const auto metadata = FileSys::PatchManager(program_id).GetControlMetadata();
+            const auto metadata = [&content_provider, &fsc, program_id] {
+                const FileSys::PatchManager pm{program_id, fsc, content_provider};
+                return pm.GetControlMetadata();
+            }();
             if (metadata.first != nullptr) {
                 name = metadata.first->GetApplicationName();
             }
@@ -189,20 +196,29 @@ void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
     // Log user configuration information
     constexpr auto field_type = Telemetry::FieldType::UserConfig;
     AddField(field_type, "Audio_SinkId", Settings::values.sink_id);
-    AddField(field_type, "Audio_EnableAudioStretching", Settings::values.enable_audio_stretching);
-    AddField(field_type, "Core_UseMultiCore", Settings::values.use_multi_core);
-    AddField(field_type, "Renderer_Backend", TranslateRenderer(Settings::values.renderer_backend));
-    AddField(field_type, "Renderer_ResolutionFactor", Settings::values.resolution_factor);
-    AddField(field_type, "Renderer_UseFrameLimit", Settings::values.use_frame_limit);
-    AddField(field_type, "Renderer_FrameLimit", Settings::values.frame_limit);
-    AddField(field_type, "Renderer_UseDiskShaderCache", Settings::values.use_disk_shader_cache);
+    AddField(field_type, "Audio_EnableAudioStretching",
+             Settings::values.enable_audio_stretching.GetValue());
+    AddField(field_type, "Core_UseMultiCore", Settings::values.use_multi_core.GetValue());
+    AddField(field_type, "Renderer_Backend",
+             TranslateRenderer(Settings::values.renderer_backend.GetValue()));
+    AddField(field_type, "Renderer_ResolutionFactor",
+             Settings::values.resolution_factor.GetValue());
+    AddField(field_type, "Renderer_UseFrameLimit", Settings::values.use_frame_limit.GetValue());
+    AddField(field_type, "Renderer_FrameLimit", Settings::values.frame_limit.GetValue());
+    AddField(field_type, "Renderer_UseDiskShaderCache",
+             Settings::values.use_disk_shader_cache.GetValue());
     AddField(field_type, "Renderer_GPUAccuracyLevel",
-             TranslateGPUAccuracyLevel(Settings::values.gpu_accuracy));
+             TranslateGPUAccuracyLevel(Settings::values.gpu_accuracy.GetValue()));
     AddField(field_type, "Renderer_UseAsynchronousGpuEmulation",
-             Settings::values.use_asynchronous_gpu_emulation);
-    AddField(field_type, "Renderer_UseVsync", Settings::values.use_vsync);
-    AddField(field_type, "Renderer_UseAssemblyShaders", Settings::values.use_assembly_shaders);
-    AddField(field_type, "System_UseDockedMode", Settings::values.use_docked_mode);
+             Settings::values.use_asynchronous_gpu_emulation.GetValue());
+    AddField(field_type, "Renderer_UseNvdecEmulation",
+             Settings::values.use_nvdec_emulation.GetValue());
+    AddField(field_type, "Renderer_UseVsync", Settings::values.use_vsync.GetValue());
+    AddField(field_type, "Renderer_UseAssemblyShaders",
+             Settings::values.use_assembly_shaders.GetValue());
+    AddField(field_type, "Renderer_UseAsynchronousShaders",
+             Settings::values.use_asynchronous_shaders.GetValue());
+    AddField(field_type, "System_UseDockedMode", Settings::values.use_docked_mode.GetValue());
 }
 
 bool TelemetrySession::SubmitTestcase() {

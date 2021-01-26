@@ -32,6 +32,8 @@ add_custom_command(OUTPUT scm_rev.cpp
     DEPENDS
       # WARNING! It was too much work to try and make a common location for this list,
       # so if you need to change it, please update CMakeModules/GenerateSCMRev.cmake as well
+      "${VIDEO_CORE}/renderer_opengl/gl_arb_decompiler.cpp"
+      "${VIDEO_CORE}/renderer_opengl/gl_arb_decompiler.h"
       "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.cpp"
       "${VIDEO_CORE}/renderer_opengl/gl_shader_cache.h"
       "${VIDEO_CORE}/renderer_opengl/gl_shader_decompiler.cpp"
@@ -96,23 +98,30 @@ add_library(common STATIC
     algorithm.h
     alignment.h
     assert.h
+    atomic_ops.h
     detached_tasks.cpp
     detached_tasks.h
+    bit_cast.h
     bit_field.h
+    bit_set.h
     bit_util.h
     cityhash.cpp
     cityhash.h
-    color.h
     common_funcs.h
     common_paths.h
     common_types.h
+    concepts.h
+    div_ceil.h
     dynamic_library.cpp
     dynamic_library.h
+    fiber.cpp
+    fiber.h
     file_util.cpp
     file_util.h
     hash.h
     hex_util.cpp
     hex_util.h
+    intrusive_red_black_tree.h
     logging/backend.cpp
     logging/backend.h
     logging/filter.cpp
@@ -125,22 +134,24 @@ add_library(common STATIC
     math_util.h
     memory_detect.cpp
     memory_detect.h
-    memory_hook.cpp
-    memory_hook.h
     microprofile.cpp
     microprofile.h
     microprofileui.h
     misc.cpp
-    multi_level_queue.h
     page_table.cpp
     page_table.h
     param_package.cpp
     param_package.h
+    parent_of_member.h
     quaternion.h
     ring_buffer.h
     scm_rev.cpp
     scm_rev.h
     scope_exit.h
+    spin_lock.cpp
+    spin_lock.h
+    stream.cpp
+    stream.h
     string_util.cpp
     string_util.h
     swap.h
@@ -149,11 +160,12 @@ add_library(common STATIC
     thread.cpp
     thread.h
     thread_queue_list.h
+    thread_worker.cpp
+    thread_worker.h
     threadsafe_queue.h
     time_zone.cpp
     time_zone.h
-    timer.cpp
-    timer.h
+    tree.h
     uint128.cpp
     uint128.h
     uuid.cpp
@@ -161,7 +173,8 @@ add_library(common STATIC
     vector_math.h
     virtual_buffer.cpp
     virtual_buffer.h
-    web_result.h
+    wall_clock.cpp
+    wall_clock.h
     zstd_compression.cpp
     zstd_compression.h
 )
@@ -171,10 +184,35 @@ if(ARCHITECTURE_x86_64)
         PRIVATE
             x64/cpu_detect.cpp
             x64/cpu_detect.h
+            x64/native_clock.cpp
+            x64/native_clock.h
+            x64/xbyak_abi.h
+            x64/xbyak_util.h
     )
+endif()
+
+if (MSVC)
+  target_compile_definitions(common PRIVATE
+    # The standard library doesn't provide any replacement for codecvt yet
+    # so we can disable this deprecation warning for the time being.
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+  )
+  target_compile_options(common PRIVATE
+    /W4
+    /WX
+  )
+else()
+  target_compile_options(common PRIVATE
+    -Werror
+  )
 endif()
 
 create_target_directory_groups(common)
 
-target_link_libraries(common PUBLIC Boost::boost fmt::fmt microprofile)
-target_link_libraries(common PRIVATE lz4::lz4 zstd::zstd)
+target_link_libraries(common PUBLIC ${Boost_LIBRARIES} fmt::fmt microprofile)
+target_link_libraries(common PRIVATE lz4::lz4 xbyak)
+if (MSVC)
+  target_link_libraries(common PRIVATE zstd::zstd)
+else()
+  target_link_libraries(common PRIVATE zstd)
+endif()

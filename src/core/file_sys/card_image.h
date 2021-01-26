@@ -9,8 +9,11 @@
 #include <vector>
 #include "common/common_types.h"
 #include "common/swap.h"
-#include "core/crypto/key_manager.h"
 #include "core/file_sys/vfs.h"
+
+namespace Core::Crypto {
+class KeyManager;
+}
 
 namespace Loader {
 enum class ResultStatus : u16;
@@ -75,7 +78,7 @@ enum class XCIPartition : u8 { Update, Normal, Secure, Logo };
 
 class XCI : public ReadOnlyVfsDirectory {
 public:
-    explicit XCI(VirtualFile file);
+    explicit XCI(VirtualFile file, std::size_t program_index = 0);
     ~XCI() override;
 
     Loader::ResultStatus GetStatus() const;
@@ -140,6 +143,6 @@ private:
 
     u64 update_normal_partition_end;
 
-    Core::Crypto::KeyManager keys;
+    Core::Crypto::KeyManager& keys;
 };
 } // namespace FileSys

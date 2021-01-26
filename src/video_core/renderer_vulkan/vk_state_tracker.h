@@ -26,6 +26,15 @@ enum : u8 {
     DepthBounds,
     StencilProperties,
 
+    CullMode,
+    DepthBoundsEnable,
+    DepthTestEnable,
+    DepthWriteEnable,
+    DepthCompareOp,
+    FrontFace,
+    StencilOp,
+    StencilTestEnable,
+
     Last
 };
 static_assert(Last <= std::numeric_limits<u8>::max());
@@ -33,12 +42,23 @@ static_assert(Last <= std::numeric_limits<u8>::max());
 } // namespace Dirty
 
 class StateTracker {
+    using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+
 public:
-    explicit StateTracker(Core::System& system);
+    explicit StateTracker(Tegra::GPU& gpu);
 
-    void Initialize();
+    void InvalidateCommandBufferState() {
+        flags |= invalidation_flags;
+        current_topology = INVALID_TOPOLOGY;
+    }
 
-    void InvalidateCommandBufferState();
+    void InvalidateViewports() {
+        flags[Dirty::Viewports] = true;
+    }
+
+    void InvalidateScissors() {
+        flags[Dirty::Scissors] = true;
+    }
 
     bool TouchViewports() {
         return Exchange(Dirty::Viewports, false);
@@ -64,16 +84,60 @@ public:
         return Exchange(Dirty::StencilProperties, false);
     }
 
+    bool TouchCullMode() {
+        return Exchange(Dirty::CullMode, false);
+    }
+
+    bool TouchDepthBoundsTestEnable() {
+        return Exchange(Dirty::DepthBoundsEnable, false);
+    }
+
+    bool TouchDepthTestEnable() {
+        return Exchange(Dirty::DepthTestEnable, false);
+    }
+
+    bool TouchDepthBoundsEnable() {
+        return Exchange(Dirty::DepthBoundsEnable, false);
+    }
+
+    bool TouchDepthWriteEnable() {
+        return Exchange(Dirty::DepthWriteEnable, false);
+    }
+
+    bool TouchDepthCompareOp() {
+        return Exchange(Dirty::DepthCompareOp, false);
+    }
+
+    bool TouchFrontFace() {
+        return Exchange(Dirty::FrontFace, false);
+    }
+
+    bool TouchStencilOp() {
+        return Exchange(Dirty::StencilOp, false);
+    }
+
+    bool TouchStencilTestEnable() {
+        return Exchange(Dirty::StencilTestEnable, false);
+    }
+
+    bool ChangePrimitiveTopology(Maxwell::PrimitiveTopology new_topology) {
+        const bool has_changed = current_topology != new_topology;
+        current_topology = new_topology;
+        return has_changed;
+    }
+
 private:
+    static constexpr auto INVALID_TOPOLOGY = static_cast<Maxwell::PrimitiveTopology>(~0u);
+
     bool Exchange(std::size_t id, bool new_value) const noexcept {
-        auto& flags = system.GPU().Maxwell3D().dirty.flags;
         const bool is_dirty = flags[id];
         flags[id] = new_value;
         return is_dirty;
     }
 
-    Core::System& system;
+    Tegra::Engines::Maxwell3D::DirtyState::Flags& flags;
     Tegra::Engines::Maxwell3D::DirtyState::Flags invalidation_flags;
+    Maxwell::PrimitiveTopology current_topology = INVALID_TOPOLOGY;
 };
 
 } // namespace Vulkan

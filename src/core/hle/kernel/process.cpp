@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <ctime>
 #include <memory>
 #include <random>
 #include "common/alignment.h"
@@ -14,14 +15,15 @@
 #include "core/file_sys/program_metadata.h"
 #include "core/hle/kernel/code_set.h"
 #include "core/hle/kernel/errors.h"
+#include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/memory/memory_block_manager.h"
 #include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/memory/slab_heap.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/resource_limit.h"
-#include "core/hle/kernel/scheduler.h"
 #include "core/hle/kernel/thread.h"
+#include "core/hle/lock.h"
 #include "core/memory.h"
 #include "core/settings.h"
 
@@ -30,14 +32,15 @@ namespace {
 /**
  * Sets up the primary application thread
  *
+ * @param system The system instance to create the main thread under.
  * @param owner_process The parent process for the main thread
- * @param kernel The kernel instance to create the main thread under.
  * @param priority The priority to give the main thread
  */
-void SetupMainThread(Process& owner_process, KernelCore& kernel, u32 priority, VAddr stack_top) {
+void SetupMainThread(Core::System& system, Process& owner_process, u32 priority, VAddr stack_top) {
     const VAddr entry_point = owner_process.PageTable().GetCodeRegionStart();
-    auto thread_res = Thread::Create(kernel, "main", entry_point, priority, 0,
-                                     owner_process.GetIdealCore(), stack_top, owner_process);
+    ThreadType type = THREADTYPE_USER;
+    auto thread_res = Thread::Create(system, type, "main", entry_point, priority, 0,
+                                     owner_process.GetIdealCore(), stack_top, &owner_process);
 
     std::shared_ptr<Thread> thread = std::move(thread_res).Unwrap();
 
@@ -48,8 +51,12 @@ void SetupMainThread(Process& owner_process, KernelCore& kernel, u32 priority, V
     thread->GetContext32().cpu_registers[1] = thread_handle;
     thread->GetContext64().cpu_registers[1] = thread_handle;
 
+    auto& kernel = system.Kernel();
     // Threads by default are dormant, wake up the main thread so it runs when the scheduler fires
-    thread->ResumeFromWait();
+    {
+        KScopedSchedulerLock lock{kernel};
+        thread->SetState(ThreadState::Runnable);
+    }
 }
 } // Anonymous namespace
 
@@ -117,7 +124,7 @@ std::shared_ptr<Process> Process::Create(Core::System& system, std::string name,
                                                               : kernel.CreateNewUserProcessID();
     process->capabilities.InitializeForMetadatalessProcess();
 
-    std::mt19937 rng(Settings::values.rng_seed.value_or(0));
+    std::mt19937 rng(Settings::values.rng_seed.GetValue().value_or(std::time(nullptr)));
     std::uniform_int_distribution<u64> distribution;
     std::generate(process->random_entropy.begin(), process->random_entropy.end(),
                   [&] { return distribution(rng); });
@@ -132,7 +139,8 @@ std::shared_ptr<ResourceLimit> Process::GetResourceLimit() const {
 
 u64 Process::GetTotalPhysicalMemoryAvailable() const {
     const u64 capacity{resource_limit->GetCurrentResourceValue(ResourceType::PhysicalMemory) +
-                       page_table->GetTotalHeapSize() + image_size + main_thread_stack_size};
+                       page_table->GetTotalHeapSize() + GetSystemResourceSize() + image_size +
+                       main_thread_stack_size};
 
     if (capacity < memory_usage_capacity) {
         return capacity;
@@ -146,54 +154,12 @@ u64 Process::GetTotalPhysicalMemoryAvailableWithoutSystemResource() const {
 }
 
 u64 Process::GetTotalPhysicalMemoryUsed() const {
-    return image_size + main_thread_stack_size + page_table->GetTotalHeapSize();
+    return image_size + main_thread_stack_size + page_table->GetTotalHeapSize() +
+           GetSystemResourceSize();
 }
 
 u64 Process::GetTotalPhysicalMemoryUsedWithoutSystemResource() const {
     return GetTotalPhysicalMemoryUsed() - GetSystemResourceUsage();
-}
-
-void Process::InsertConditionVariableThread(std::shared_ptr<Thread> thread) {
-    VAddr cond_var_addr = thread->GetCondVarWaitAddress();
-    std::list<std::shared_ptr<Thread>>& thread_list = cond_var_threads[cond_var_addr];
-    auto it = thread_list.begin();
-    while (it != thread_list.end()) {
-        const std::shared_ptr<Thread> current_thread = *it;
-        if (current_thread->GetPriority() > thread->GetPriority()) {
-            thread_list.insert(it, thread);
-            return;
-        }
-        ++it;
-    }
-    thread_list.push_back(thread);
-}
-
-void Process::RemoveConditionVariableThread(std::shared_ptr<Thread> thread) {
-    VAddr cond_var_addr = thread->GetCondVarWaitAddress();
-    std::list<std::shared_ptr<Thread>>& thread_list = cond_var_threads[cond_var_addr];
-    auto it = thread_list.begin();
-    while (it != thread_list.end()) {
-        const std::shared_ptr<Thread> current_thread = *it;
-        if (current_thread.get() == thread.get()) {
-            thread_list.erase(it);
-            return;
-        }
-        ++it;
-    }
-    UNREACHABLE();
-}
-
-std::vector<std::shared_ptr<Thread>> Process::GetConditionVariableThreads(
-    const VAddr cond_var_addr) {
-    std::vector<std::shared_ptr<Thread>> result{};
-    std::list<std::shared_ptr<Thread>>& thread_list = cond_var_threads[cond_var_addr];
-    auto it = thread_list.begin();
-    while (it != thread_list.end()) {
-        std::shared_ptr<Thread> current_thread = *it;
-        result.push_back(current_thread);
-        ++it;
-    }
-    return result;
 }
 
 void Process::RegisterThread(const Thread* thread) {
@@ -205,6 +171,7 @@ void Process::UnregisterThread(const Thread* thread) {
 }
 
 ResultCode Process::ClearSignalState() {
+    KScopedSchedulerLock lock(system.Kernel());
     if (status == ProcessStatus::Exited) {
         LOG_ERROR(Kernel, "called on a terminated process instance.");
         return ERR_INVALID_STATE;
@@ -292,7 +259,7 @@ void Process::Run(s32 main_thread_priority, u64 stack_size) {
 
     ChangeStatus(ProcessStatus::Running);
 
-    SetupMainThread(*this, kernel, main_thread_priority, main_thread_stack_top);
+    SetupMainThread(system, *this, main_thread_priority, main_thread_stack_top);
     resource_limit->Reserve(ResourceType::Threads, 1);
     resource_limit->Reserve(ResourceType::PhysicalMemory, main_thread_stack_size);
 }
@@ -305,18 +272,18 @@ void Process::PrepareForTermination() {
             if (thread->GetOwnerProcess() != this)
                 continue;
 
-            if (thread.get() == system.CurrentScheduler().GetCurrentThread())
+            if (thread.get() == kernel.CurrentScheduler()->GetCurrentThread())
                 continue;
 
             // TODO(Subv): When are the other running/ready threads terminated?
-            ASSERT_MSG(thread->GetStatus() == ThreadStatus::WaitSynch,
+            ASSERT_MSG(thread->GetState() == ThreadState::Waiting,
                        "Exiting processes with non-waiting threads is currently unimplemented");
 
             thread->Stop();
         }
     };
 
-    stop_threads(system.GlobalScheduler().GetThreadList());
+    stop_threads(system.GlobalSchedulerContext().GetThreadList());
 
     FreeTLSRegion(tls_region_address);
     tls_region_address = 0;
@@ -338,6 +305,7 @@ static auto FindTLSPageWithAvailableSlots(std::vector<TLSPage>& tls_pages) {
 }
 
 VAddr Process::CreateTLSRegion() {
+    KScopedSchedulerLock lock(system.Kernel());
     if (auto tls_page_iter{FindTLSPageWithAvailableSlots(tls_pages)};
         tls_page_iter != tls_pages.cend()) {
         return *tls_page_iter->ReserveSlot();
@@ -368,6 +336,7 @@ VAddr Process::CreateTLSRegion() {
 }
 
 void Process::FreeTLSRegion(VAddr tls_address) {
+    KScopedSchedulerLock lock(system.Kernel());
     const VAddr aligned_address = Common::AlignDown(tls_address, Core::Memory::PAGE_SIZE);
     auto iter =
         std::find_if(tls_pages.begin(), tls_pages.end(), [aligned_address](const auto& page) {
@@ -382,6 +351,7 @@ void Process::FreeTLSRegion(VAddr tls_address) {
 }
 
 void Process::LoadModule(CodeSet code_set, VAddr base_addr) {
+    std::lock_guard lock{HLE::g_hle_lock};
     const auto ReprotectSegment = [&](const CodeSet::Segment& segment,
                                       Memory::MemoryPermission permission) {
         page_table->SetCodeMemoryPermission(segment.addr + base_addr, segment.size, permission);
@@ -394,20 +364,17 @@ void Process::LoadModule(CodeSet code_set, VAddr base_addr) {
     ReprotectSegment(code_set.DataSegment(), Memory::MemoryPermission::ReadAndWrite);
 }
 
+bool Process::IsSignaled() const {
+    ASSERT(kernel.GlobalSchedulerContext().IsLocked());
+    return is_signaled;
+}
+
 Process::Process(Core::System& system)
-    : SynchronizationObject{system.Kernel()}, page_table{std::make_unique<Memory::PageTable>(
-                                                  system)},
-      address_arbiter{system}, mutex{system}, system{system} {}
+    : KSynchronizationObject{system.Kernel()},
+      page_table{std::make_unique<Memory::PageTable>(system)}, handle_table{system.Kernel()},
+      address_arbiter{system}, condition_var{system}, system{system} {}
 
 Process::~Process() = default;
-
-void Process::Acquire(Thread* thread) {
-    ASSERT_MSG(!ShouldWait(thread), "Object unavailable!");
-}
-
-bool Process::ShouldWait(const Thread* thread) const {
-    return !is_signaled;
-}
 
 void Process::ChangeStatus(ProcessStatus new_status) {
     if (status == new_status) {
@@ -416,7 +383,7 @@ void Process::ChangeStatus(ProcessStatus new_status) {
 
     status = new_status;
     is_signaled = true;
-    Signal();
+    NotifyAvailable();
 }
 
 ResultCode Process::AllocateMainThreadStack(std::size_t stack_size) {

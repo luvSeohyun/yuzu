@@ -1,4 +1,4 @@
-// Copyright 2018 yuzu emulator team
+// Copyright 2018 yuzu Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -13,13 +13,13 @@
 
 namespace Service::Capture {
 
-void InstallInterfaces(SM::ServiceManager& sm) {
-    std::make_shared<CAPS_A>()->InstallAsService(sm);
-    std::make_shared<CAPS_C>()->InstallAsService(sm);
-    std::make_shared<CAPS_U>()->InstallAsService(sm);
-    std::make_shared<CAPS_SC>()->InstallAsService(sm);
-    std::make_shared<CAPS_SS>()->InstallAsService(sm);
-    std::make_shared<CAPS_SU>()->InstallAsService(sm);
+void InstallInterfaces(SM::ServiceManager& sm, Core::System& system) {
+    std::make_shared<CAPS_A>(system)->InstallAsService(sm);
+    std::make_shared<CAPS_C>(system)->InstallAsService(sm);
+    std::make_shared<CAPS_U>(system)->InstallAsService(sm);
+    std::make_shared<CAPS_SC>(system)->InstallAsService(sm);
+    std::make_shared<CAPS_SS>(system)->InstallAsService(sm);
+    std::make_shared<CAPS_SU>(system)->InstallAsService(sm);
 }
 
 } // namespace Service::Capture

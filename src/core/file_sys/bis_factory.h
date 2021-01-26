@@ -6,7 +6,8 @@
 
 #include <memory>
 
-#include "core/file_sys/vfs.h"
+#include "common/common_types.h"
+#include "core/file_sys/vfs_types.h"
 
 namespace FileSys {
 
@@ -51,7 +52,7 @@ public:
     VirtualDir GetModificationDumpRoot(u64 title_id) const;
 
     VirtualDir OpenPartition(BisPartitionId id) const;
-    VirtualFile OpenPartitionStorage(BisPartitionId id) const;
+    VirtualFile OpenPartitionStorage(BisPartitionId id, VirtualFilesystem file_system) const;
 
     VirtualDir GetImageDirectory() const;
 

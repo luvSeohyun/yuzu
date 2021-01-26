@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <atomic>
 
 #include "common/logging/log.h"
@@ -20,8 +21,9 @@ namespace ErrCodes {
 constexpr ResultCode ERR_NO_APPLICATION_AREA(ErrorModule::NFP, 152);
 } // namespace ErrCodes
 
-Module::Interface::Interface(std::shared_ptr<Module> module, Core::System& system, const char* name)
-    : ServiceFramework(name), module(std::move(module)), system(system) {
+Module::Interface::Interface(std::shared_ptr<Module> module_, Core::System& system_,
+                             const char* name)
+    : ServiceFramework{system_, name}, module{std::move(module_)} {
     auto& kernel = system.Kernel();
     nfc_tag_load = Kernel::WritableEvent::CreateEventPair(kernel, "IUser:NFCTagDetected");
 }
@@ -30,8 +32,8 @@ Module::Interface::~Interface() = default;
 
 class IUser final : public ServiceFramework<IUser> {
 public:
-    IUser(Module::Interface& nfp_interface, Core::System& system)
-        : ServiceFramework("NFP::IUser"), nfp_interface(nfp_interface) {
+    explicit IUser(Module::Interface& nfp_interface_, Core::System& system_)
+        : ServiceFramework{system_, "NFP::IUser"}, nfp_interface{nfp_interface_} {
         static const FunctionInfo functions[] = {
             {0, &IUser::Initialize, "Initialize"},
             {1, &IUser::Finalize, "Finalize"},
@@ -72,10 +74,10 @@ private:
         std::array<u8, 10> uuid;
         u8 uuid_length; // TODO(ogniK): Figure out if this is actual the uuid length or does it
                         // mean something else
-        INSERT_PADDING_BYTES(0x15);
+        std::array<u8, 0x15> padding_1;
         u32_le protocol;
         u32_le tag_type;
-        INSERT_PADDING_BYTES(0x2c);
+        std::array<u8, 0x2c> padding_2;
     };
     static_assert(sizeof(TagInfo) == 0x54, "TagInfo is an invalid size");
 
@@ -127,7 +129,7 @@ private:
         const u32 array_size = rp.Pop<u32>();
         LOG_DEBUG(Service_NFP, "called, array_size={}", array_size);
 
-        ctx.WriteBuffer(&device_handle, sizeof(device_handle));
+        ctx.WriteBuffer(device_handle);
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
@@ -188,12 +190,6 @@ private:
     void GetDeviceState(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_NFP, "called");
 
-        auto nfc_event = nfp_interface.GetNFCEvent();
-        if (!nfc_event->ShouldWait(&ctx.GetThread()) && !has_attached_handle) {
-            device_state = DeviceState::TagFound;
-            nfc_event->Clear();
-        }
-
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
         rb.Push<u32>(static_cast<u32>(device_state));
@@ -213,14 +209,16 @@ private:
         LOG_DEBUG(Service_NFP, "called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        auto amiibo = nfp_interface.GetAmiiboBuffer();
-        TagInfo tag_info{};
-        tag_info.uuid = amiibo.uuid;
-        tag_info.uuid_length = static_cast<u8>(tag_info.uuid.size());
-
-        tag_info.protocol = 1; // TODO(ogniK): Figure out actual values
-        tag_info.tag_type = 2;
-        ctx.WriteBuffer(&tag_info, sizeof(TagInfo));
+        const auto& amiibo = nfp_interface.GetAmiiboBuffer();
+        const TagInfo tag_info{
+            .uuid = amiibo.uuid,
+            .uuid_length = static_cast<u8>(tag_info.uuid.size()),
+            .padding_1 = {},
+            .protocol = 1, // TODO(ogniK): Figure out actual values
+            .tag_type = 2,
+            .padding_2 = {},
+        };
+        ctx.WriteBuffer(tag_info);
         rb.Push(RESULT_SUCCESS);
     }
 
@@ -236,8 +234,8 @@ private:
         LOG_DEBUG(Service_NFP, "called");
 
         IPC::ResponseBuilder rb{ctx, 2};
-        auto amiibo = nfp_interface.GetAmiiboBuffer();
-        ctx.WriteBuffer(&amiibo.model_info, sizeof(amiibo.model_info));
+        const auto& amiibo = nfp_interface.GetAmiiboBuffer();
+        ctx.WriteBuffer(amiibo.model_info);
         rb.Push(RESULT_SUCCESS);
     }
 
@@ -283,7 +281,7 @@ private:
 
         CommonInfo common_info{};
         common_info.application_area_size = 0;
-        ctx.WriteBuffer(&common_info, sizeof(CommonInfo));
+        ctx.WriteBuffer(common_info);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);

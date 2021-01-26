@@ -19,9 +19,23 @@
 #include "core/memory/cheat_engine.h"
 
 namespace Core::Memory {
-
-constexpr s64 CHEAT_ENGINE_TICKS = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 12);
+namespace {
+constexpr auto CHEAT_ENGINE_NS = std::chrono::nanoseconds{1000000000 / 12};
 constexpr u32 KEYPAD_BITMASK = 0x3FFFFFF;
+
+std::string_view ExtractName(std::string_view data, std::size_t start_index, char match) {
+    auto end_index = start_index;
+    while (data[end_index] != match) {
+        ++end_index;
+        if (end_index > data.size() ||
+            (end_index - start_index - 1) > sizeof(CheatDefinition::readable_name)) {
+            return {};
+        }
+    }
+
+    return data.substr(start_index, end_index - start_index);
+}
+} // Anonymous namespace
 
 StandardVmCallbacks::StandardVmCallbacks(Core::System& system, const CheatProcessMetadata& metadata)
     : metadata(metadata), system(system) {}
@@ -42,7 +56,7 @@ u64 StandardVmCallbacks::HidKeysDown() {
     if (applet_resource == nullptr) {
         LOG_WARNING(CheatEngine,
                     "Attempted to read input state, but applet resource is not initialized!");
-        return false;
+        return 0;
     }
 
     const auto press_state =
@@ -82,26 +96,9 @@ CheatParser::~CheatParser() = default;
 
 TextCheatParser::~TextCheatParser() = default;
 
-namespace {
-template <char match>
-std::string_view ExtractName(std::string_view data, std::size_t start_index) {
-    auto end_index = start_index;
-    while (data[end_index] != match) {
-        ++end_index;
-        if (end_index > data.size() ||
-            (end_index - start_index - 1) > sizeof(CheatDefinition::readable_name)) {
-            return {};
-        }
-    }
-
-    return data.substr(start_index, end_index - start_index);
-}
-} // Anonymous namespace
-
-std::vector<CheatEntry> TextCheatParser::Parse(const Core::System& system,
-                                               std::string_view data) const {
+std::vector<CheatEntry> TextCheatParser::Parse(std::string_view data) const {
     std::vector<CheatEntry> out(1);
-    std::optional<u64> current_entry = std::nullopt;
+    std::optional<u64> current_entry;
 
     for (std::size_t i = 0; i < data.size(); ++i) {
         if (::isspace(data[i])) {
@@ -115,7 +112,7 @@ std::vector<CheatEntry> TextCheatParser::Parse(const Core::System& system,
                 return {};
             }
 
-            const auto name = ExtractName<'}'>(data, i + 1);
+            const auto name = ExtractName(data, i + 1, '}');
             if (name.empty()) {
                 return {};
             }
@@ -132,7 +129,7 @@ std::vector<CheatEntry> TextCheatParser::Parse(const Core::System& system,
             current_entry = out.size();
             out.emplace_back();
 
-            const auto name = ExtractName<']'>(data, i + 1);
+            const auto name = ExtractName(data, i + 1, ']');
             if (name.empty()) {
                 return {};
             }
@@ -156,8 +153,9 @@ std::vector<CheatEntry> TextCheatParser::Parse(const Core::System& system,
                 return {};
             }
 
+            const auto value = static_cast<u32>(std::stoul(hex, nullptr, 0x10));
             out[*current_entry].definition.opcodes[out[*current_entry].definition.num_opcodes++] =
-                std::stoul(hex, nullptr, 0x10);
+                value;
 
             i += 8;
         } else {
@@ -190,24 +188,38 @@ CheatEngine::~CheatEngine() {
 void CheatEngine::Initialize() {
     event = Core::Timing::CreateEvent(
         "CheatEngine::FrameCallback::" + Common::HexToString(metadata.main_nso_build_id),
-        [this](u64 userdata, s64 cycles_late) { FrameCallback(userdata, cycles_late); });
-    core_timing.ScheduleEvent(CHEAT_ENGINE_TICKS, event);
+        [this](std::uintptr_t user_data, std::chrono::nanoseconds ns_late) {
+            FrameCallback(user_data, ns_late);
+        });
+    core_timing.ScheduleEvent(CHEAT_ENGINE_NS, event);
 
     metadata.process_id = system.CurrentProcess()->GetProcessID();
     metadata.title_id = system.CurrentProcess()->GetTitleID();
 
     const auto& page_table = system.CurrentProcess()->PageTable();
-    metadata.heap_extents = {page_table.GetHeapRegionStart(), page_table.GetHeapRegionSize()};
-    metadata.address_space_extents = {page_table.GetAddressSpaceStart(),
-                                      page_table.GetAddressSpaceSize()};
-    metadata.alias_extents = {page_table.GetAliasCodeRegionStart(),
-                              page_table.GetAliasCodeRegionSize()};
+    metadata.heap_extents = {
+        .base = page_table.GetHeapRegionStart(),
+        .size = page_table.GetHeapRegionSize(),
+    };
+
+    metadata.address_space_extents = {
+        .base = page_table.GetAddressSpaceStart(),
+        .size = page_table.GetAddressSpaceSize(),
+    };
+
+    metadata.alias_extents = {
+        .base = page_table.GetAliasCodeRegionStart(),
+        .size = page_table.GetAliasCodeRegionSize(),
+    };
 
     is_pending_reload.exchange(true);
 }
 
 void CheatEngine::SetMainMemoryParameters(VAddr main_region_begin, u64 main_region_size) {
-    metadata.main_nso_extents = {main_region_begin, main_region_size};
+    metadata.main_nso_extents = {
+        .base = main_region_begin,
+        .size = main_region_size,
+    };
 }
 
 void CheatEngine::Reload(std::vector<CheatEntry> cheats) {
@@ -217,7 +229,7 @@ void CheatEngine::Reload(std::vector<CheatEntry> cheats) {
 
 MICROPROFILE_DEFINE(Cheat_Engine, "Add-Ons", "Cheat Engine", MP_RGB(70, 200, 70));
 
-void CheatEngine::FrameCallback(u64 userdata, s64 cycles_late) {
+void CheatEngine::FrameCallback(std::uintptr_t, std::chrono::nanoseconds ns_late) {
     if (is_pending_reload.exchange(false)) {
         vm.LoadProgram(cheats);
     }
@@ -230,7 +242,7 @@ void CheatEngine::FrameCallback(u64 userdata, s64 cycles_late) {
 
     vm.Execute(metadata);
 
-    core_timing.ScheduleEvent(CHEAT_ENGINE_TICKS - cycles_late, event);
+    core_timing.ScheduleEvent(CHEAT_ENGINE_NS - ns_late, event);
 }
 
 } // namespace Core::Memory

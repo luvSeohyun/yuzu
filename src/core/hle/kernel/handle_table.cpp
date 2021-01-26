@@ -8,6 +8,8 @@
 #include "core/core.h"
 #include "core/hle/kernel/errors.h"
 #include "core/hle/kernel/handle_table.h"
+#include "core/hle/kernel/k_scheduler.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/thread.h"
 
@@ -22,7 +24,7 @@ constexpr u16 GetGeneration(Handle handle) {
 }
 } // Anonymous namespace
 
-HandleTable::HandleTable() {
+HandleTable::HandleTable(KernelCore& kernel) : kernel{kernel} {
     Clear();
 }
 
@@ -103,9 +105,9 @@ bool HandleTable::IsValid(Handle handle) const {
 
 std::shared_ptr<Object> HandleTable::GetGeneric(Handle handle) const {
     if (handle == CurrentThread) {
-        return SharedFrom(GetCurrentThread());
+        return SharedFrom(kernel.CurrentScheduler()->GetCurrentThread());
     } else if (handle == CurrentProcess) {
-        return SharedFrom(Core::System::GetInstance().CurrentProcess());
+        return SharedFrom(kernel.CurrentProcess());
     }
 
     if (!IsValid(handle)) {
@@ -116,7 +118,7 @@ std::shared_ptr<Object> HandleTable::GetGeneric(Handle handle) const {
 
 void HandleTable::Clear() {
     for (u16 i = 0; i < table_size; ++i) {
-        generations[i] = i + 1;
+        generations[i] = static_cast<u16>(i + 1);
         objects[i] = nullptr;
     }
     next_free_slot = 0;

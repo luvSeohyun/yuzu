@@ -5,15 +5,11 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
-#include <memory>
 #include <queue>
 
-#include "common/assert.h"
 #include "common/common_types.h"
 #include "core/core.h"
-#include "core/memory.h"
-#include "core/settings.h"
+#include "video_core/delayed_destruction_ring.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -22,11 +18,11 @@ namespace VideoCommon {
 
 class FenceBase {
 public:
-    FenceBase(u32 payload, bool is_stubbed)
-        : address{}, payload{payload}, is_semaphore{false}, is_stubbed{is_stubbed} {}
+    explicit FenceBase(u32 payload_, bool is_stubbed_)
+        : address{}, payload{payload_}, is_semaphore{false}, is_stubbed{is_stubbed_} {}
 
-    FenceBase(GPUVAddr address, u32 payload, bool is_stubbed)
-        : address{address}, payload{payload}, is_semaphore{true}, is_stubbed{is_stubbed} {}
+    explicit FenceBase(GPUVAddr address_, u32 payload_, bool is_stubbed_)
+        : address{address_}, payload{payload_}, is_semaphore{true}, is_stubbed{is_stubbed_} {}
 
     GPUVAddr GetAddress() const {
         return address;
@@ -52,6 +48,11 @@ protected:
 template <typename TFence, typename TTextureCache, typename TTBufferCache, typename TQueryCache>
 class FenceManager {
 public:
+    /// Notify the fence manager about a new frame
+    void TickFrame() {
+        delayed_destruction_ring.Tick();
+    }
+
     void SignalSemaphore(GPUVAddr addr, u32 value) {
         TryReleasePendingFences();
         const bool should_flush = ShouldFlush();
@@ -79,8 +80,6 @@ public:
     }
 
     void WaitPendingFences() {
-        auto& gpu{system.GPU()};
-        auto& memory_manager{gpu.MemoryManager()};
         while (!fences.empty()) {
             TFence& current_fence = fences.front();
             if (ShouldWait()) {
@@ -88,23 +87,23 @@ public:
             }
             PopAsyncFlushes();
             if (current_fence->IsSemaphore()) {
-                memory_manager.template Write<u32>(current_fence->GetAddress(),
-                                                   current_fence->GetPayload());
+                gpu_memory.template Write<u32>(current_fence->GetAddress(),
+                                               current_fence->GetPayload());
             } else {
                 gpu.IncrementSyncPoint(current_fence->GetPayload());
             }
-            fences.pop();
+            PopFence();
         }
     }
 
 protected:
-    FenceManager(Core::System& system, VideoCore::RasterizerInterface& rasterizer,
-                 TTextureCache& texture_cache, TTBufferCache& buffer_cache,
-                 TQueryCache& query_cache)
-        : system{system}, rasterizer{rasterizer}, texture_cache{texture_cache},
-          buffer_cache{buffer_cache}, query_cache{query_cache} {}
+    explicit FenceManager(VideoCore::RasterizerInterface& rasterizer_, Tegra::GPU& gpu_,
+                          TTextureCache& texture_cache_, TTBufferCache& buffer_cache_,
+                          TQueryCache& query_cache_)
+        : rasterizer{rasterizer_}, gpu{gpu_}, gpu_memory{gpu.MemoryManager()},
+          texture_cache{texture_cache_}, buffer_cache{buffer_cache_}, query_cache{query_cache_} {}
 
-    virtual ~FenceManager() {}
+    virtual ~FenceManager() = default;
 
     /// Creates a Sync Point Fence Interface, does not create a backend fence if 'is_stubbed' is
     /// true
@@ -118,16 +117,15 @@ protected:
     /// Waits until a fence has been signalled by the host GPU.
     virtual void WaitFence(TFence& fence) = 0;
 
-    Core::System& system;
     VideoCore::RasterizerInterface& rasterizer;
+    Tegra::GPU& gpu;
+    Tegra::MemoryManager& gpu_memory;
     TTextureCache& texture_cache;
     TTBufferCache& buffer_cache;
     TQueryCache& query_cache;
 
 private:
     void TryReleasePendingFences() {
-        auto& gpu{system.GPU()};
-        auto& memory_manager{gpu.MemoryManager()};
         while (!fences.empty()) {
             TFence& current_fence = fences.front();
             if (ShouldWait() && !IsFenceSignaled(current_fence)) {
@@ -135,12 +133,12 @@ private:
             }
             PopAsyncFlushes();
             if (current_fence->IsSemaphore()) {
-                memory_manager.template Write<u32>(current_fence->GetAddress(),
-                                                   current_fence->GetPayload());
+                gpu_memory.template Write<u32>(current_fence->GetAddress(),
+                                               current_fence->GetPayload());
             } else {
                 gpu.IncrementSyncPoint(current_fence->GetPayload());
             }
-            fences.pop();
+            PopFence();
         }
     }
 
@@ -166,7 +164,14 @@ private:
         query_cache.CommitAsyncFlushes();
     }
 
+    void PopFence() {
+        delayed_destruction_ring.Push(std::move(fences.front()));
+        fences.pop();
+    }
+
     std::queue<TFence> fences;
+
+    DelayedDestructionRing<TFence, 6> delayed_destruction_ring;
 };
 
 } // namespace VideoCommon

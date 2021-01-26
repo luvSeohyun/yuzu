@@ -12,7 +12,6 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs_factory.h"
-#include "core/gdbstub/gdbstub.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
@@ -89,7 +88,7 @@ FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::Virtua
 }
 
 AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirectory::Load(
-    Kernel::Process& process) {
+    Kernel::Process& process, Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }
@@ -114,7 +113,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     }
 
     if (override_update) {
-        const FileSys::PatchManager patch_manager(metadata.GetTitleID());
+        const FileSys::PatchManager patch_manager(
+            metadata.GetTitleID(), system.GetFileSystemController(), system.GetContentProvider());
         dir = patch_manager.PatchExeFS(dir);
     }
 
@@ -141,9 +141,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
             continue;
         }
 
-        const bool should_pass_arguments{std::strcmp(module, "rtld") == 0};
-        const auto tentative_next_load_addr{AppLoader_NSO::LoadModule(
-            process, *module_file, code_size, should_pass_arguments, false)};
+        const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+            process, system, *module_file, code_size, should_pass_arguments, false);
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};
         }
@@ -160,7 +160,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     modules.clear();
     const VAddr base_address{process.PageTable().GetCodeRegionStart()};
     VAddr next_load_addr{base_address};
-    const FileSys::PatchManager pm{metadata.GetTitleID()};
+    const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
+                                   system.GetContentProvider()};
     for (const auto& module : static_modules) {
         const FileSys::VirtualFile module_file{dir->GetFile(module)};
         if (!module_file) {
@@ -168,9 +169,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         }
 
         const VAddr load_addr{next_load_addr};
-        const bool should_pass_arguments{std::strcmp(module, "rtld") == 0};
-        const auto tentative_next_load_addr{AppLoader_NSO::LoadModule(
-            process, *module_file, load_addr, should_pass_arguments, true, pm)};
+        const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+            process, system, *module_file, load_addr, should_pass_arguments, true, pm);
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};
         }
@@ -178,8 +179,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         next_load_addr = *tentative_next_load_addr;
         modules.insert_or_assign(load_addr, module);
         LOG_DEBUG(Loader, "loaded module {} @ 0x{:X}", module, load_addr);
-        // Register module with GDBStub
-        GDBStub::RegisterModule(module, load_addr, next_load_addr - 1, false);
     }
 
     // Find the RomFS by searching for a ".romfs" file in this directory
@@ -192,8 +191,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     // Register the RomFS if a ".romfs" file was found
     if (romfs_iter != files.end() && *romfs_iter != nullptr) {
         romfs = *romfs_iter;
-        Core::System::GetInstance().GetFileSystemController().RegisterRomFS(
-            std::make_unique<FileSys::RomFSFactory>(*this));
+        system.GetFileSystemController().RegisterRomFS(std::make_unique<FileSys::RomFSFactory>(
+            *this, system.GetContentProvider(), system.GetFileSystemController()));
     }
 
     is_loaded = true;

@@ -24,13 +24,9 @@ bool ResourceLimit::Reserve(ResourceType resource, s64 amount, u64 timeout) {
     const std::size_t index{ResourceTypeToIndex(resource)};
 
     s64 new_value = current[index] + amount;
-    while (new_value > limit[index] && available[index] + amount <= limit[index]) {
+    if (new_value > limit[index] && available[index] + amount <= limit[index]) {
         // TODO(bunnei): This is wrong for multicore, we should wait the calling thread for timeout
         new_value = current[index] + amount;
-
-        if (timeout >= 0) {
-            break;
-        }
     }
 
     if (new_value <= limit[index]) {
@@ -69,8 +65,8 @@ ResultCode ResourceLimit::SetLimitValue(ResourceType resource, s64 value) {
         limit[index] = value;
         return RESULT_SUCCESS;
     } else {
-        LOG_ERROR(Kernel, "Limit value is too large! resource={}, value={}, index={}",
-                  static_cast<u32>(resource), value, index);
+        LOG_ERROR(Kernel, "Limit value is too large! resource={}, value={}, index={}", resource,
+                  value, index);
         return ERR_INVALID_STATE;
     }
 }

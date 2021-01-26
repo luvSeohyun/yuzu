@@ -24,10 +24,10 @@
 #define INSERT_PADDING_WORDS(num_words)                                                            \
     std::array<u32, num_words> CONCAT2(pad, __LINE__) {}
 
-/// These are similar to the INSERT_PADDING_* macros, but are needed for padding unions. This is
-/// because unions can only be initialized by one member.
-#define INSERT_UNION_PADDING_BYTES(num_bytes) std::array<u8, num_bytes> CONCAT2(pad, __LINE__)
-#define INSERT_UNION_PADDING_WORDS(num_words) std::array<u32, num_words> CONCAT2(pad, __LINE__)
+/// These are similar to the INSERT_PADDING_* macros but do not zero-initialize the contents.
+/// This keeps the structure trivial to construct.
+#define INSERT_PADDING_BYTES_NOINIT(num_bytes) std::array<u8, num_bytes> CONCAT2(pad, __LINE__)
+#define INSERT_PADDING_WORDS_NOINIT(num_words) std::array<u32, num_words> CONCAT2(pad, __LINE__)
 
 #ifndef _MSC_VER
 
@@ -53,43 +53,57 @@ __declspec(dllimport) void __stdcall DebugBreak(void);
 // Call directly after the command or use the error num.
 // This function might change the error code.
 // Defined in Misc.cpp.
-std::string GetLastErrorMsg();
+[[nodiscard]] std::string GetLastErrorMsg();
 
 #define DECLARE_ENUM_FLAG_OPERATORS(type)                                                          \
-    constexpr type operator|(type a, type b) noexcept {                                            \
+    [[nodiscard]] constexpr type operator|(type a, type b) noexcept {                              \
         using T = std::underlying_type_t<type>;                                                    \
         return static_cast<type>(static_cast<T>(a) | static_cast<T>(b));                           \
     }                                                                                              \
-    constexpr type operator&(type a, type b) noexcept {                                            \
+    [[nodiscard]] constexpr type operator&(type a, type b) noexcept {                              \
         using T = std::underlying_type_t<type>;                                                    \
         return static_cast<type>(static_cast<T>(a) & static_cast<T>(b));                           \
     }                                                                                              \
-    constexpr type& operator|=(type& a, type b) noexcept {                                         \
+    [[nodiscard]] constexpr type operator^(type a, type b) noexcept {                              \
         using T = std::underlying_type_t<type>;                                                    \
-        a = static_cast<type>(static_cast<T>(a) | static_cast<T>(b));                              \
+        return static_cast<type>(static_cast<T>(a) ^ static_cast<T>(b));                           \
+    }                                                                                              \
+    constexpr type& operator|=(type& a, type b) noexcept {                                         \
+        a = a | b;                                                                                 \
         return a;                                                                                  \
     }                                                                                              \
     constexpr type& operator&=(type& a, type b) noexcept {                                         \
-        using T = std::underlying_type_t<type>;                                                    \
-        a = static_cast<type>(static_cast<T>(a) & static_cast<T>(b));                              \
+        a = a & b;                                                                                 \
         return a;                                                                                  \
     }                                                                                              \
-    constexpr type operator~(type key) noexcept {                                                  \
+    constexpr type& operator^=(type& a, type b) noexcept {                                         \
+        a = a ^ b;                                                                                 \
+        return a;                                                                                  \
+    }                                                                                              \
+    [[nodiscard]] constexpr type operator~(type key) noexcept {                                    \
         using T = std::underlying_type_t<type>;                                                    \
         return static_cast<type>(~static_cast<T>(key));                                            \
     }                                                                                              \
-    constexpr bool True(type key) noexcept {                                                       \
+    [[nodiscard]] constexpr bool True(type key) noexcept {                                         \
         using T = std::underlying_type_t<type>;                                                    \
         return static_cast<T>(key) != 0;                                                           \
     }                                                                                              \
-    constexpr bool False(type key) noexcept {                                                      \
+    [[nodiscard]] constexpr bool False(type key) noexcept {                                        \
         using T = std::underlying_type_t<type>;                                                    \
         return static_cast<T>(key) == 0;                                                           \
     }
 
+/// Evaluates a boolean expression, and returns a result unless that expression is true.
+#define R_UNLESS(expr, res)                                                                        \
+    {                                                                                              \
+        if (!(expr)) {                                                                             \
+            return res;                                                                            \
+        }                                                                                          \
+    }
+
 namespace Common {
 
-constexpr u32 MakeMagic(char a, char b, char c, char d) {
+[[nodiscard]] constexpr u32 MakeMagic(char a, char b, char c, char d) {
     return u32(a) | u32(b) << 8 | u32(c) << 16 | u32(d) << 24;
 }
 
